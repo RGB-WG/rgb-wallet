@@ -28,9 +28,7 @@ use rgb::Occurrences;
 use strict_encoding::{FieldName, TypeName, VariantName};
 use strict_types::{SemId, SymbolicSys};
 
-use super::{
-    ArgMap, ExtensionIface, GenesisIface, Iface, IfaceId, Modifier, OwnedIface, TransitionIface,
-};
+use super::{ArgMap, ExtensionIface, GenesisIface, Iface, IfaceId, Modifier, TransitionIface};
 
 struct ArgMapDisplay<'a>(&'a ArgMap);
 
@@ -266,13 +264,9 @@ impl<'a> Display for IfaceDisplay<'a> {
             write!(f, "{fname}")?;
             sugar(f, a.required, a.multiple)?;
             f.write_str(": ")?;
-            match a.owned_state {
-                OwnedIface::Any => write!(f, "AnyType")?,
-                OwnedIface::Amount => write!(f, "Zk64")?,
-                OwnedIface::AnyData => write!(f, "Any")?,
-                OwnedIface::AnyAttach => write!(f, "AnyAttachment")?,
-                OwnedIface::Rights => write!(f, "Rights")?,
-                OwnedIface::Data(id) => resolve(f, self.types, id)?,
+            match a.state_ty {
+                None => write!(f, "T any => T")?,
+                Some(id) => resolve(f, self.types, id)?,
             }
             writeln!(f)?;
         }

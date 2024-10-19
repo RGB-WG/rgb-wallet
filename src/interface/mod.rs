@@ -31,17 +31,16 @@ mod filter;
 pub(crate) mod resolver;
 mod contractum;
 mod inheritance;
+mod calc;
 
 pub use builder::{BuilderError, ContractBuilder, TransitionBuilder, TxOutpoint};
-pub use contract::{
-    AllocatedState, AttachAllocation, ContractError, ContractIface, ContractOp, DataAllocation,
-    FungibleAllocation, OpDirection, OwnedAllocation, RightsAllocation,
-};
+pub use calc::{AllocatedState, StateAbi, StateCalc, StateCalcError};
+pub use contract::{ContractError, ContractIface, ContractOp, OpDirection, Output};
 pub use contractum::IfaceDisplay;
 pub use filter::{AssignmentsFilter, FilterExclude, FilterIncludeAll};
 pub use iface::{
     ArgMap, AssignIface, ExtensionIface, GenesisIface, GlobalIface, Iface, IfaceClass, IfaceId,
-    IfaceInconsistency, IfaceRef, IfaceWrapper, Modifier, OpName, OwnedIface, Req, TransitionIface,
+    IfaceInconsistency, IfaceRef, IfaceWrapper, Modifier, OpName, Req, TransitionIface,
     ValencyIface,
 };
 pub use iimpl::{IfaceImpl, ImplId, NamedField, NamedType, NamedVariant, SchemaTypeIndex};

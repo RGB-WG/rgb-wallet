@@ -18,9 +18,7 @@ name = "rgbinvoice"
 [dependencies]
 amplify = { workspace = true }
 baid64 = { workspace = true }
-fast32 = "1.0.3"
 strict_encoding = { workspace = true }
-strict_types = { workspace = true }
 bp-core = { workspace = true }
 bp-invoice = { workspace = true }
 rgb-core = { workspace = true }

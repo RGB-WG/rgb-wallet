@@ -19,10 +19,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod assignments;
+mod allocation;
 mod merge_reveal;
 
-pub use assignments::{KnownState, OutputAssignment, TypedAssignsExt, WitnessInfo};
+pub use allocation::{Allocation, WitnessInfo};
 pub use merge_reveal::{MergeReveal, MergeRevealError};
 use rgb::vm::OrdOpRef;
 use rgb::{ExtensionType, OpId, TransitionType, XWitnessId};

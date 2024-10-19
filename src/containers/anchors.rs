@@ -36,7 +36,7 @@ use rgb::{
 use strict_encoding::StrictDumb;
 
 use crate::containers::Dichotomy;
-use crate::{MergeReveal, MergeRevealError, TypedAssignsExt, LIB_NAME_RGB_STD};
+use crate::{MergeReveal, MergeRevealError, LIB_NAME_RGB_STD};
 
 #[derive(Clone, Eq, PartialEq, Debug, Display, Error)]
 #[display("state transition {0} is not a part of the bundle.")]

@@ -36,7 +36,7 @@ use strict_encoding::{FieldName, StrictDumb, VariantName};
 use strict_types::encoding::{StrictDecode, StrictEncode, StrictType};
 
 use crate::interface::iface::IfaceId;
-use crate::interface::{Iface, VerNo};
+use crate::interface::{Iface, StateAbi, VerNo};
 use crate::{ReservedBytes, LIB_NAME_RGB_STD};
 
 pub trait SchemaTypeIndex:
@@ -228,6 +228,7 @@ pub struct IfaceImpl {
     pub extensions: TinyOrdSet<NamedField<ExtensionType>>,
     pub errors: TinyOrdSet<NamedVariant<u8>>,
     pub developer: Identity,
+    pub state_abi: StateAbi,
 }
 
 impl IfaceImpl {
@@ -255,7 +256,7 @@ impl IfaceImpl {
             .map(|nt| nt.id)
     }
 
-    pub fn assignments_type(&self, name: &FieldName) -> Option<AssignmentType> {
+    pub fn assignment_type(&self, name: &FieldName) -> Option<AssignmentType> {
         self.assignments
             .iter()
             .find(|nt| &nt.name == name)

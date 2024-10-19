@@ -42,11 +42,10 @@ use rgb::vm::{
     OrdOpRef, UnknownGlobalStateType, WitnessOrd,
 };
 use rgb::{
-    Assign, AssignmentType, Assignments, AssignmentsRef, AttachId, AttachState, BundleId,
-    ContractId, DataState, ExposedSeal, ExposedState, Extension, FungibleState, Genesis,
-    GenesisSeal, GlobalStateType, GraphSeal, Identity, OpId, Operation, Opout, RevealedAttach,
-    RevealedData, RevealedValue, Schema, SchemaId, SecretSeal, Transition, TransitionBundle,
-    TypedAssigns, VoidState, XChain, XOutpoint, XOutputSeal, XWitnessId,
+    Assign, AssignmentType, Assignments, AssignmentsRef, AttachId, BundleId, ContractId,
+    ExposedSeal, Extension, Genesis, GenesisSeal, GlobalStateType, GraphSeal, Identity, OpId,
+    Operation, Opout, Schema, SchemaId, SecretSeal, StateData, Transition, TransitionBundle,
+    XChain, XOutpoint, XOutputSeal, XWitnessId,
 };
 use strict_encoding::{StrictDeserialize, StrictSerialize};
 use strict_types::TypeSystem;
@@ -61,7 +60,7 @@ use super::{
 use crate::containers::{
     AnchorSet, ContentId, ContentRef, ContentSigs, SealWitness, SigBlob, Supplement, TrustLevel,
 };
-use crate::contract::{GlobalOut, KnownState, OpWitness, OutputAssignment};
+use crate::contract::{Allocation, GlobalOut, OpWitness};
 use crate::interface::{Iface, IfaceClass, IfaceId, IfaceImpl, IfaceRef};
 use crate::LIB_NAME_RGB_STORAGE;
 
@@ -566,10 +565,7 @@ impl StateReadProvider for MemState {
                     .values()
                     .flat_map(|state| state.known.keys())
                     .any(|out| out.witness_id() == id)
-                    || unfiltered.rights.iter().any(|a| a.witness == id)
-                    || unfiltered.fungibles.iter().any(|a| a.witness == id)
-                    || unfiltered.data.iter().any(|a| a.witness == id)
-                    || unfiltered.attach.iter().any(|a| a.witness == id)
+                    || unfiltered.owned.iter().any(|a| a.witness == id)
             })
             .map(|(id, ord)| (*id, *ord))
             .collect();
@@ -684,7 +680,7 @@ impl StateWriteProvider for MemState {
 #[strict_type(lib = LIB_NAME_RGB_STORAGE)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate = "serde_crate"))]
 pub struct MemGlobalState {
-    known: LargeOrdMap<GlobalOut, DataState>,
+    known: LargeOrdMap<GlobalOut, StateData>,
     limit: u24,
 }
 
@@ -721,10 +717,7 @@ pub struct MemContractState {
     contract_id: ContractId,
     #[getter(skip)]
     global: TinyOrdMap<GlobalStateType, MemGlobalState>,
-    rights: LargeOrdSet<OutputAssignment<VoidState>>,
-    fungibles: LargeOrdSet<OutputAssignment<RevealedValue>>,
-    data: LargeOrdSet<OutputAssignment<RevealedData>>,
-    attach: LargeOrdSet<OutputAssignment<RevealedAttach>>,
+    owned: LargeOrdSet<Allocation>,
 }
 
 impl MemContractState {
@@ -739,10 +732,7 @@ impl MemContractState {
             schema_id: schema.schema_id(),
             contract_id,
             global,
-            rights: empty!(),
-            fungibles: empty!(),
-            data: empty!(),
-            attach: empty!(),
+            owned: empty!(),
         }
     }
 
@@ -817,44 +807,26 @@ impl MemContractState {
         opid: OpId,
         assignments: &Assignments<Seal>,
     ) {
-        fn process<State: ExposedState + KnownState, Seal: ExposedSeal>(
-            contract_state: &mut LargeOrdSet<OutputAssignment<State>>,
-            assignments: &[Assign<State, Seal>],
-            opid: OpId,
-            ty: AssignmentType,
-            witness_id: Option<XWitnessId>,
-        ) {
+        for (ty, assignments) in assignments.iter() {
             for (no, seal, state) in assignments
                 .iter()
                 .enumerate()
-                .filter_map(|(n, a)| a.to_revealed().map(|(seal, state)| (n, seal, state)))
+                .filter_map(|(n, a)| a.revealed_seal().map(|seal| (n, seal, a.as_state())))
             {
                 let assigned_state = match witness_id {
-                    Some(witness_id) => {
-                        OutputAssignment::with_witness(seal, witness_id, state, opid, ty, no as u16)
-                    }
-                    None => OutputAssignment::with_no_witness(seal, state, opid, ty, no as u16),
+                    Some(witness_id) => Allocation::with_witness(
+                        seal,
+                        witness_id,
+                        state.clone(),
+                        opid,
+                        *ty,
+                        no as u16,
+                    ),
+                    None => Allocation::with_no_witness(seal, state.clone(), opid, *ty, no as u16),
                 };
-                contract_state
+                self.owned
                     .push(assigned_state)
                     .expect("contract state exceeded 2^32 items, which is unrealistic");
-            }
-        }
-
-        for (ty, assignments) in assignments.iter() {
-            match assignments {
-                TypedAssigns::Declarative(assignments) => {
-                    process(&mut self.rights, assignments, opid, *ty, witness_id)
-                }
-                TypedAssigns::Fungible(assignments) => {
-                    process(&mut self.fungibles, assignments, opid, *ty, witness_id)
-                }
-                TypedAssigns::Structured(assignments) => {
-                    process(&mut self.data, assignments, opid, *ty, witness_id)
-                }
-                TypedAssigns::Attachment(assignments) => {
-                    process(&mut self.attach, assignments, opid, *ty, witness_id)
-                }
             }
         }
     }
@@ -876,12 +848,12 @@ impl<M: Borrow<MemContractState>> ContractStateAccess for MemContract<M> {
         &self,
         ty: GlobalStateType,
     ) -> Result<GlobalContractState<impl GlobalStateIter>, UnknownGlobalStateType> {
-        type Src<'a> = &'a BTreeMap<GlobalOut, DataState>;
-        type FilteredIter<'a> = Box<dyn Iterator<Item = (GlobalOrd, &'a DataState)> + 'a>;
+        type Src<'a> = &'a BTreeMap<GlobalOut, StateData>;
+        type FilteredIter<'a> = Box<dyn Iterator<Item = (GlobalOrd, &'a StateData)> + 'a>;
         struct Iter<'a> {
             src: Src<'a>,
             iter: FilteredIter<'a>,
-            last: Option<(GlobalOrd, &'a DataState)>,
+            last: Option<(GlobalOrd, &'a StateData)>,
             depth: u24,
             constructor: Box<dyn Fn(Src<'a>) -> FilteredIter<'a> + 'a>,
         }
@@ -893,7 +865,7 @@ impl<M: Borrow<MemContractState>> ContractStateAccess for MemContract<M> {
             }
         }
         impl<'a> GlobalStateIter for Iter<'a> {
-            type Data = &'a DataState;
+            type Data = &'a StateData;
             fn size(&mut self) -> u24 {
                 let iter = self.swap();
                 // TODO: Consuming iterator just to count items is highly inefficient, but I do
@@ -964,64 +936,20 @@ impl<M: Borrow<MemContractState>> ContractStateAccess for MemContract<M> {
         Ok(GlobalContractState::new(iter))
     }
 
-    fn rights(&self, outpoint: XOutpoint, ty: AssignmentType) -> u32 {
-        self.unfiltered
-            .borrow()
-            .rights
-            .iter()
-            .filter(|assignment| {
-                assignment.seal.to_outpoint() == outpoint && assignment.opout.ty == ty
-            })
-            .filter(|assignment| assignment.check_witness(&self.filter))
-            .count() as u32
-    }
-
-    fn fungible(
+    fn state(
         &self,
         outpoint: XOutpoint,
         ty: AssignmentType,
-    ) -> impl DoubleEndedIterator<Item = FungibleState> {
+    ) -> impl DoubleEndedIterator<Item = impl Borrow<rgb::State>> {
         self.unfiltered
             .borrow()
-            .fungibles
+            .owned
             .iter()
             .filter(move |assignment| {
                 assignment.seal.to_outpoint() == outpoint && assignment.opout.ty == ty
             })
             .filter(|assignment| assignment.check_witness(&self.filter))
-            .map(|assignment| assignment.state.value)
-    }
-
-    fn data(
-        &self,
-        outpoint: XOutpoint,
-        ty: AssignmentType,
-    ) -> impl DoubleEndedIterator<Item = impl Borrow<DataState>> {
-        self.unfiltered
-            .borrow()
-            .data
-            .iter()
-            .filter(move |assignment| {
-                assignment.seal.to_outpoint() == outpoint && assignment.opout.ty == ty
-            })
-            .filter(|assignment| assignment.check_witness(&self.filter))
-            .map(|assignment| &assignment.state.value)
-    }
-
-    fn attach(
-        &self,
-        outpoint: XOutpoint,
-        ty: AssignmentType,
-    ) -> impl DoubleEndedIterator<Item = impl Borrow<AttachState>> {
-        self.unfiltered
-            .borrow()
-            .attach
-            .iter()
-            .filter(move |assignment| {
-                assignment.seal.to_outpoint() == outpoint && assignment.opout.ty == ty
-            })
-            .filter(|assignment| assignment.check_witness(&self.filter))
-            .map(|assignment| &assignment.state.file)
+            .map(|assignment| &assignment.state)
     }
 }
 
@@ -1088,37 +1016,10 @@ impl<M: Borrow<MemContractState>> ContractStateRead for MemContract<M> {
     }
 
     #[inline]
-    fn rights_all(&self) -> impl Iterator<Item = &OutputAssignment<VoidState>> {
+    fn assignments(&self) -> impl Iterator<Item = &Allocation> {
         self.unfiltered
             .borrow()
-            .rights
-            .iter()
-            .filter(|assignment| assignment.check_witness(&self.filter))
-    }
-
-    #[inline]
-    fn fungible_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedValue>> {
-        self.unfiltered
-            .borrow()
-            .fungibles
-            .iter()
-            .filter(|assignment| assignment.check_witness(&self.filter))
-    }
-
-    #[inline]
-    fn data_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedData>> {
-        self.unfiltered
-            .borrow()
-            .data
-            .iter()
-            .filter(|assignment| assignment.check_witness(&self.filter))
-    }
-
-    #[inline]
-    fn attach_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedAttach>> {
-        self.unfiltered
-            .borrow()
-            .attach
+            .owned
             .iter()
             .filter(|assignment| assignment.check_witness(&self.filter))
     }
@@ -1419,10 +1320,10 @@ impl IndexWriteProvider for MemIndex {
         Ok(!present)
     }
 
-    fn index_genesis_assignments<State: ExposedState>(
+    fn index_genesis_assignments(
         &mut self,
         contract_id: ContractId,
-        vec: &[Assign<State, GenesisSeal>],
+        assignments: &[Assign<GenesisSeal>],
         opid: OpId,
         type_id: AssignmentType,
     ) -> Result<(), IndexWriteError<Self::Error>> {
@@ -1431,31 +1332,28 @@ impl IndexWriteProvider for MemIndex {
             .get_mut(&contract_id)
             .ok_or(IndexInconsistency::ContractAbsent(contract_id))?;
 
-        for (no, assign) in vec.iter().enumerate() {
+        for (no, assign) in assignments.iter().enumerate() {
             let opout = Opout::new(opid, type_id, no as u16);
-            if let Assign::ConfidentialState { seal, .. } | Assign::Revealed { seal, .. } = assign {
+            if let Assign::Revealed { seal, .. } = assign {
                 let output = seal
                     .to_output_seal()
                     .expect("genesis seals always have outpoint");
-                match index.outpoint_opouts.get_mut(&output) {
-                    Some(opouts) => {
-                        opouts.push(opout)?;
-                    }
-                    None => {
-                        index.outpoint_opouts.insert(output, medium_bset!(opout))?;
-                    }
-                }
+                index
+                    .outpoint_opouts
+                    .entry(output)?
+                    .or_default()
+                    .push(opout)?;
             }
         }
 
         // We need two cycles due to the borrow checker
-        self.extend_terminals(vec, opid, type_id)
+        self.extend_terminals(assignments, opid, type_id)
     }
 
-    fn index_transition_assignments<State: ExposedState>(
+    fn index_transition_assignments(
         &mut self,
         contract_id: ContractId,
-        vec: &[Assign<State, GraphSeal>],
+        assignments: &[Assign<GraphSeal>],
         opid: OpId,
         type_id: AssignmentType,
         witness_id: XWitnessId,
@@ -1465,44 +1363,38 @@ impl IndexWriteProvider for MemIndex {
             .get_mut(&contract_id)
             .ok_or(IndexInconsistency::ContractAbsent(contract_id))?;
 
-        for (no, assign) in vec.iter().enumerate() {
+        for (no, assign) in assignments.iter().enumerate() {
             let opout = Opout::new(opid, type_id, no as u16);
-            if let Assign::ConfidentialState { seal, .. } | Assign::Revealed { seal, .. } = assign {
+            if let Assign::Revealed { seal, .. } = assign {
                 let output = seal.try_to_output_seal(witness_id).unwrap_or_else(|_| {
                     panic!(
-                        "chain mismatch between assignment vout seal ({}) and witness transaction \
-                         ({})",
-                        seal, witness_id
+                        "chain mismatch between assignment vout seal {seal} and witness \
+                         transaction {witness_id}",
                     )
                 });
-                match index.outpoint_opouts.get_mut(&output) {
-                    Some(opouts) => {
-                        opouts.push(opout)?;
-                    }
-                    None => {
-                        index.outpoint_opouts.insert(output, medium_bset!(opout))?;
-                    }
-                }
+                index
+                    .outpoint_opouts
+                    .entry(output)?
+                    .or_default()
+                    .push(opout)?;
             }
         }
 
         // We need two cycles due to the borrow checker
-        self.extend_terminals(vec, opid, type_id)
+        self.extend_terminals(assignments, opid, type_id)
     }
 }
 
 impl MemIndex {
-    fn extend_terminals<State: ExposedState, Seal: ExposedSeal>(
+    fn extend_terminals<Seal: ExposedSeal>(
         &mut self,
-        vec: &[Assign<State, Seal>],
+        vec: &[Assign<Seal>],
         opid: OpId,
         type_id: AssignmentType,
     ) -> Result<(), IndexWriteError<MemError>> {
         for (no, assign) in vec.iter().enumerate() {
             let opout = Opout::new(opid, type_id, no as u16);
-            if let Assign::Confidential { seal, .. } | Assign::ConfidentialSeal { seal, .. } =
-                assign
-            {
+            if let Assign::Confidential { seal, .. } = assign {
                 self.add_terminal(*seal, opout)?;
             }
         }

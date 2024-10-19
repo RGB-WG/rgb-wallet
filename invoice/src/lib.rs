@@ -21,8 +21,6 @@
 
 #[macro_use]
 extern crate amplify;
-#[macro_use]
-extern crate strict_encoding;
 extern crate rgbcore as rgb;
 #[cfg(feature = "serde")]
 extern crate serde_crate as serde;
@@ -34,17 +32,10 @@ pub use ::invoice::*;
 mod invoice;
 mod parse;
 mod builder;
-mod amount;
-mod data;
 
-pub use amount::{Amount, AmountParseError, CoinAmount, Precision, PrecisionError};
 pub use builder::RgbInvoiceBuilder;
-pub use data::{Allocation, NonFungible, OwnedFraction, TokenIndex};
 pub use parse::{InvoiceParseError, TransportParseError};
 
 pub use crate::invoice::{
-    Beneficiary, ChainNet, InvoiceState, Pay2Vout, Pay2VoutError, RgbInvoice, RgbTransport,
-    XChainNet,
+    Beneficiary, ChainNet, Pay2Vout, Pay2VoutError, RgbInvoice, RgbTransport, XChainNet,
 };
-
-pub const LIB_NAME_RGB_CONTRACT: &str = "RGBContract";

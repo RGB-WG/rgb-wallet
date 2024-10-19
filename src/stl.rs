@@ -19,38 +19,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use amplify::IoError;
+use baid64::Baid64ParseError;
 pub use bp::bc::stl::bp_tx_stl;
 pub use bp::stl::bp_core_stl;
-#[allow(unused_imports)]
 pub use commit_verify::stl::{commit_verify_stl, LIB_ID_COMMIT_VERIFY};
-use invoice::{Allocation, Amount};
 pub use rgb::stl::{aluvm_stl, rgb_commit_stl, rgb_logic_stl, LIB_ID_RGB_COMMIT, LIB_ID_RGB_LOGIC};
 use strict_types::stl::{std_stl, strict_types_stl};
-use strict_types::typesys::SystemBuilder;
-use strict_types::{CompileError, LibBuilder, SemId, SymbolicSys, TypeLib, TypeSystem};
+use strict_types::{typesys, CompileError, LibBuilder, TypeLib};
 
-use super::{
-    AssetSpec, BurnMeta, ContractSpec, ContractTerms, Error, IssueMeta, MediaType,
-    LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_STORAGE,
-};
 use crate::containers::{Contract, Kit, Transfer};
 use crate::persistence::{MemIndex, MemStash, MemState};
-use crate::stl::ProofOfReserves;
-use crate::LIB_NAME_RGB_STD;
+
+pub const LIB_NAME_RGB_STD: &str = "RGBStd";
+pub const LIB_NAME_RGB_STORAGE: &str = "RGBStorage";
 
 /// Strict types id for the library providing standard data types which may be
 /// used in RGB smart contracts.
 pub const LIB_ID_RGB_STORAGE: &str =
-    "stl:mG$H7b6I-$T8qp18-07PSNeA-rbEBNS5-$J5X4y0-1vPxRWg#channel-vortex-bandit";
-
-/// Strict types id for the library providing standard data types which may be
-/// used in RGB smart contracts.
-pub const LIB_ID_RGB_CONTRACT: &str =
-    "stl:!r5yXt4a-v3XXv0M-E9Z6eoh-BFZweik-fxS6CB4-8AaO!MM#rover-annual-disney";
+    "stl:dYzM3Ct9-SJ8PljY-C!6hB6y-VlWvDE7-DAtNg3y-zanf6hE#media-fresh-cadet";
 
 /// Strict types id for the library representing of RGB StdLib data types.
 pub const LIB_ID_RGB_STD: &str =
-    "stl:JhUC5JgH-Kwps4cO-ZNUklUj-UP6boFp-OY!18Kx-xOSJaVQ#hair-magnum-helena";
+    "stl:3QsSNDHr-YPIKTR9-5O!fLuv-xhcxKT2-0LWrO9b-pG15Nvw#mango-inside-shelf";
+
+#[allow(dead_code)]
+#[derive(Debug, From)]
+pub enum Error {
+    #[from(std::io::Error)]
+    Io(IoError),
+    #[from]
+    Baid64(Baid64ParseError),
+    #[from]
+    Compile(CompileError),
+    #[from]
+    Link1(typesys::Error),
+    #[from]
+    Link2(Vec<typesys::Error>),
+}
 
 fn _rgb_std_stl() -> Result<TypeLib, CompileError> {
     LibBuilder::new(libname!(LIB_NAME_RGB_STD), tiny_bset! {
@@ -66,23 +72,6 @@ fn _rgb_std_stl() -> Result<TypeLib, CompileError> {
     .transpile::<Transfer>()
     .transpile::<Contract>()
     .transpile::<Kit>()
-    .compile()
-}
-
-fn _rgb_contract_stl() -> Result<TypeLib, CompileError> {
-    LibBuilder::new(libname!(LIB_NAME_RGB_CONTRACT), tiny_bset! {
-        std_stl().to_dependency(),
-        bp_tx_stl().to_dependency()
-    })
-    .transpile::<Amount>()
-    .transpile::<Allocation>()
-    .transpile::<ContractSpec>()
-    .transpile::<AssetSpec>()
-    .transpile::<ContractTerms>()
-    .transpile::<MediaType>()
-    .transpile::<ProofOfReserves>()
-    .transpile::<BurnMeta>()
-    .transpile::<IssueMeta>()
     .compile()
 }
 
@@ -107,64 +96,15 @@ fn _rgb_storage_stl() -> Result<TypeLib, CompileError> {
 /// Generates strict type library representation of RGB StdLib data types.
 pub fn rgb_std_stl() -> TypeLib { _rgb_std_stl().expect("invalid strict type RGBStd library") }
 
-/// Generates strict type library providing standard data types which may be
-/// used in RGB smart contracts.
-pub fn rgb_contract_stl() -> TypeLib {
-    _rgb_contract_stl().expect("invalid strict type RGBContract library")
-}
-
 /// Generates strict type library providing standard storage for state, contract
 /// state and index.
 pub fn rgb_storage_stl() -> TypeLib {
     _rgb_storage_stl().expect("invalid strict type RGBStorage library")
 }
 
-#[derive(Debug)]
-pub struct StandardTypes(SymbolicSys);
-
-impl Default for StandardTypes {
-    fn default() -> Self { StandardTypes::new() }
-}
-
-impl StandardTypes {
-    pub fn new() -> Self {
-        Self::try_with([std_stl(), bp_tx_stl(), rgb_contract_stl()])
-            .expect("error in standard RGBContract type system")
-    }
-
-    pub fn with(lib: TypeLib) -> Self {
-        Self::try_with([std_stl(), bp_tx_stl(), rgb_contract_stl(), lib])
-            .expect("error in standard RGBContract type system")
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn try_with(libs: impl IntoIterator<Item = TypeLib>) -> Result<Self, Error> {
-        let mut builder = SystemBuilder::new();
-        for lib in libs.into_iter() {
-            builder = builder.import(lib)?;
-        }
-        let sys = builder.finalize()?;
-        Ok(Self(sys))
-    }
-
-    pub fn type_system(&self) -> TypeSystem { self.0.as_types().clone() }
-
-    pub fn get(&self, name: &'static str) -> SemId {
-        *self.0.resolve(name).unwrap_or_else(|| {
-            panic!("type '{name}' is absent in standard RGBContract type library")
-        })
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn contract_lib_id() {
-        let lib = rgb_contract_stl();
-        assert_eq!(lib.id().to_string(), LIB_ID_RGB_CONTRACT);
-    }
 
     #[test]
     fn std_lib_id() {

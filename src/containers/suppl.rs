@@ -221,6 +221,19 @@ impl Supplement {
         }
     }
 
+    pub fn with(
+        content: impl Into<ContentRef>,
+        creator: impl Into<Identity>,
+        timestamp: i64,
+    ) -> Self {
+        Supplement {
+            content_id: content.into(),
+            timestamp,
+            creator: creator.into(),
+            annotations: none!(),
+        }
+    }
+
     pub fn get_default_opt<T: StrictDeserialize>(
         &self,
         sub: SupplSub,

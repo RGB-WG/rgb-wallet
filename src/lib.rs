@@ -46,13 +46,10 @@ mod contract;
 pub mod info;
 
 pub use bp::{Outpoint, Txid};
-pub use contract::{
-    KnownState, MergeReveal, MergeRevealError, OutputAssignment, TypedAssignsExt, WitnessInfo,
-};
-pub use invoice::{Allocation, Amount, CoinAmount, OwnedFraction, Precision, TokenIndex};
+pub use contract::{Allocation, MergeReveal, MergeRevealError, WitnessInfo};
 pub use rgb::prelude::*;
 pub use rgb::rgbasm;
-pub use stl::{LIB_NAME_RGB_CONTRACT, LIB_NAME_RGB_STD, LIB_NAME_RGB_STORAGE};
+pub use stl::{LIB_NAME_RGB_STD, LIB_NAME_RGB_STORAGE};
 
 /// BIP32 derivation index for outputs which may contain assigned RGB state.
 pub const RGB_NATIVE_DERIVATION_INDEX: u32 = 9;

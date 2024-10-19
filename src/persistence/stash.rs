@@ -292,13 +292,34 @@ impl<P: StashProvider> Stash<P> {
             .map_err(StashError::ReadProvider)
     }
 
-    pub(super) fn extract<'a>(
+    pub(super) fn scripts<'a>(
+        &self,
+        lib_ids: impl IntoIterator<Item = LibId>,
+    ) -> Result<Scripts, StashError<P>> {
+        let mut scripts = BTreeMap::new();
+        for id in lib_ids {
+            let lib = self.provider.lib(id)?;
+            scripts.insert(id, lib.clone());
+        }
+        Ok(Scripts::from_checked(scripts))
+    }
+
+    pub(super) fn type_system(&self, iface: &Iface) -> Result<TypeSystem, StashError<P>> {
+        Ok(self
+            .provider
+            .type_system()
+            .map_err(StashError::ReadProvider)?
+            .extract(iface.types())?)
+    }
+
+    pub(super) fn types_scripts<'a>(
         &self,
         schema: &Schema,
         ifaces: impl IntoIterator<Item = &'a Iface>,
     ) -> Result<(TypeSystem, Scripts), StashError<P>> {
         let type_iter = schema
             .types()
+            .into_iter()
             .chain(ifaces.into_iter().flat_map(Iface::types));
         let types = self
             .provider
@@ -311,6 +332,7 @@ impl<P: StashProvider> Stash<P> {
             let lib = self.provider.lib(id)?;
             scripts.insert(id, lib.clone());
         }
+        // TODO: Make sure we have all the libs including their dependencies
         let scripts = Scripts::try_from(scripts)
             .map_err(|_| StashDataError::TooManyLibs(schema.schema_id()))?;
 
@@ -330,7 +352,7 @@ impl<P: StashProvider> Stash<P> {
             .get(iface_id)
             .ok_or(StashDataError::NoIfaceImpl(schema_id, iface_id))?;
 
-        let (types, scripts) = self.extract(&schema_ifaces.schema, [iface])?;
+        let (types, scripts) = self.types_scripts(&schema_ifaces.schema, [iface])?;
 
         let builder = ContractBuilder::with(
             issuer,
@@ -355,11 +377,11 @@ impl<P: StashProvider> Stash<P> {
         let iimpl = schema_ifaces
             .get(iface.iface_id())
             .ok_or(StashDataError::NoIfaceImpl(schema.schema_id(), iface.iface_id()))?;
-        let genesis = self.provider.genesis(contract_id)?;
 
-        let (types, _) = self.extract(&schema_ifaces.schema, [iface])?;
+        let types = self.type_system(iface)?;
+        let scripts = self.scripts(iimpl.state_abi.lib_ids())?;
 
-        let mut builder = if let Some(transition_name) = transition_name {
+        let builder = if let Some(transition_name) = transition_name {
             TransitionBuilder::named_transition(
                 contract_id,
                 iface.clone(),
@@ -367,6 +389,7 @@ impl<P: StashProvider> Stash<P> {
                 iimpl.clone(),
                 transition_name.into(),
                 types,
+                scripts,
             )
         } else {
             TransitionBuilder::default_transition(
@@ -375,15 +398,10 @@ impl<P: StashProvider> Stash<P> {
                 schema.clone(),
                 iimpl.clone(),
                 types,
+                scripts,
             )
         }
         .expect("internal inconsistency");
-
-        for (assignment_type, asset_tag) in genesis.asset_tags.iter() {
-            builder = builder
-                .add_asset_tag_raw(*assignment_type, *asset_tag)
-                .expect("tags are in bset and must not repeat");
-        }
 
         Ok(builder)
     }
@@ -399,11 +417,9 @@ impl<P: StashProvider> Stash<P> {
         if schema_ifaces.iimpls.is_empty() {
             return Err(StashDataError::NoIfaceImpl(schema.schema_id(), iface.iface_id()).into());
         }
-        let genesis = self.provider.genesis(contract_id)?;
+        let types = self.type_system(iface)?;
 
-        let (types, _) = self.extract(&schema_ifaces.schema, [iface])?;
-
-        let mut builder = if let Some(iimpl) = schema_ifaces.get(iface.iface_id()) {
+        let builder = if let Some(iimpl) = schema_ifaces.get(iface.iface_id()) {
             TransitionBuilder::blank_transition(
                 contract_id,
                 iface.clone(),
@@ -424,11 +440,6 @@ impl<P: StashProvider> Stash<P> {
                 types,
             )
         };
-        for (assignment_type, asset_tag) in genesis.asset_tags.iter() {
-            builder = builder
-                .add_asset_tag_raw(*assignment_type, *asset_tag)
-                .expect("tags are in bset and must not repeat");
-        }
 
         Ok(builder)
     }

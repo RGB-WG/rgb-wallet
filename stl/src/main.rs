@@ -26,8 +26,8 @@ use std::io::Write;
 use commit_verify::CommitmentLayout;
 use rgbstd::containers::Transfer;
 use rgbstd::stl::{
-    aluvm_stl, bp_core_stl, bp_tx_stl, commit_verify_stl, rgb_commit_stl, rgb_contract_stl,
-    rgb_logic_stl, rgb_std_stl, rgb_storage_stl,
+    aluvm_stl, bp_core_stl, bp_tx_stl, commit_verify_stl, rgb_commit_stl, rgb_logic_stl,
+    rgb_std_stl, rgb_storage_stl,
 };
 use strict_types::stl::{std_stl, strict_types_stl};
 use strict_types::{parse_args, StlFormat, SystemBuilder};
@@ -35,28 +35,6 @@ use strict_types::{parse_args, StlFormat, SystemBuilder};
 fn main() {
     let (_, dir) = parse_args();
     let dir = dir.unwrap_or_else(|| "./stl".to_owned());
-
-    let contract_stl = rgb_contract_stl();
-    contract_stl
-        .serialize(StlFormat::Binary, Some(&dir), "0.11.0", None)
-        .expect("unable to write to the file");
-    contract_stl
-        .serialize(StlFormat::Armored, Some(&dir), "0.11.0", None)
-        .expect("unable to write to the file");
-    contract_stl
-        .serialize(
-            StlFormat::Source,
-            Some(&dir),
-            "0.11.0",
-            Some(
-                "
-  Description: Types for writing RGB contracts and interfaces
-  Author: Dr Maxim Orlovsky <orlovsky@lnp-bp.org>
-  Copyright (C) 2023-2024 LNP/BP Standards Association. All rights reserved.
-  License: Apache-2.0",
-            ),
-        )
-        .expect("unable to write to the file");
 
     let rgb_std = rgb_std_stl();
     rgb_std

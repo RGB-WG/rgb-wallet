@@ -200,57 +200,65 @@ impl GlobalIface {
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
 pub struct AssignIface {
-    pub owned_state: OwnedIface,
+    pub state_ty: Option<SemId>,
+    pub attach: Option<bool>,
     pub public: bool,
     pub required: bool,
     pub multiple: bool,
 }
 
 impl AssignIface {
-    pub fn public(owned_state: OwnedIface, req: Req) -> Self {
+    pub fn optional() -> Self {
         AssignIface {
-            owned_state,
-            public: true,
-            required: req.is_required(),
-            multiple: req.is_multiple(),
-        }
-    }
-
-    pub fn private(owned_state: OwnedIface, req: Req) -> Self {
-        AssignIface {
-            owned_state,
+            state_ty: None,
+            attach: None,
             public: false,
-            required: req.is_required(),
-            multiple: req.is_multiple(),
+            required: false,
+            multiple: false,
         }
     }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_RGB_STD, tags = order)]
-#[cfg_attr(
-    feature = "serde",
-    derive(Serialize, Deserialize),
-    serde(crate = "serde_crate", rename_all = "camelCase")
-)]
-pub enum OwnedIface {
-    #[strict_type(dumb)]
-    Any,
-    Rights,
-    Amount,
-    AnyData,
-    AnyAttach,
-    Data(SemId),
-}
-
-impl OwnedIface {
-    pub fn sem_id(&self) -> Option<SemId> {
-        if let Self::Data(id) = self {
-            Some(*id)
-        } else {
-            None
+    pub fn required() -> Self {
+        AssignIface {
+            state_ty: None,
+            attach: None,
+            public: false,
+            required: true,
+            multiple: false,
         }
+    }
+    pub fn none_or_many() -> Self {
+        AssignIface {
+            state_ty: None,
+            attach: None,
+            public: false,
+            required: false,
+            multiple: true,
+        }
+    }
+    pub fn one_or_many() -> Self {
+        AssignIface {
+            state_ty: None,
+            attach: None,
+            public: false,
+            required: true,
+            multiple: true,
+        }
+    }
+    pub fn public(mut self) -> Self {
+        self.public = true;
+        self
+    }
+    pub fn rights(mut self) -> Self {
+        self.state_ty = Some(SemId::default());
+        self
+    }
+    pub fn typed(mut self, sem_id: SemId) -> Self {
+        self.state_ty = Some(sem_id);
+        self
+    }
+    pub fn attachments(mut self, require: bool) -> Self {
+        self.attach = Some(require);
+        self
     }
 }
 
@@ -434,11 +442,7 @@ impl Iface {
             .values()
             .copied()
             .chain(self.global_state.values().filter_map(|i| i.sem_id))
-            .chain(
-                self.assignments
-                    .values()
-                    .filter_map(|i| i.owned_state.sem_id()),
-            )
+            .chain(self.assignments.values().filter_map(|i| i.state_ty))
     }
 
     pub fn find_abstractable_impl<'a>(

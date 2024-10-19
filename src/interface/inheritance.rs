@@ -27,7 +27,7 @@ use rgb::{
 use strict_encoding::{FieldName, TypeName};
 
 use crate::interface::{
-    ExtensionIface, GenesisIface, Iface, IfaceImpl, Modifier, OpName, OwnedIface, TransitionIface,
+    ExtensionIface, GenesisIface, Iface, IfaceImpl, Modifier, OpName, TransitionIface,
 };
 
 #[derive(Clone, PartialEq, Eq, Debug, Display, From)]
@@ -273,18 +273,6 @@ pub enum ExtensionError {
     InheritanceOverflow,
 }
 
-impl OwnedIface {
-    pub fn is_superset(self, other: OwnedIface) -> bool {
-        if self == Self::Any {
-            return true;
-        }
-        if self == Self::AnyData && matches!(other, Self::Data(_)) {
-            return true;
-        }
-        self == other
-    }
-}
-
 impl Modifier {
     pub fn is_final(self) -> bool { self == Self::Final }
     pub fn can_be_overridden_by(self, other: Modifier) -> bool {
@@ -401,7 +389,7 @@ impl Iface {
                     }
                 }
                 Some(orig) => {
-                    if !orig.owned_state.is_superset(e.owned_state) {
+                    if orig.state_ty.is_some() && orig.state_ty != e.state_ty {
                         errors.push(ExtensionError::AssignmentType(name));
                     } else if orig.required & !e.required {
                         errors.push(ExtensionError::AssignmentOcc(name));

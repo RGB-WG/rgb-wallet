@@ -27,7 +27,7 @@ nonasync = "0.1.0"
 ascii-armor = "0.7.2"
 baid64 = "0.2.2"
 strict_encoding = "2.7.0"
-strict_types = "2.7.0"
+strict_types = "2.7.1"
 commit_verify = { version = "0.11.0-beta.9", features = ["stl"] }
 bp-core = { version = "0.11.0-beta.9", features = ["stl"] }
 bp-invoice = { version = "0.11.0-beta.9" }
@@ -101,10 +101,11 @@ features = ["all"]
 [patch.crates-io]
 commit_verify = { git = "https://github.com/LNP-BP/client_side_validation", branch = "develop" }
 single_use_seals = { git = "https://github.com/LNP-BP/client_side_validation", branch = "develop" }
+strict_types = { git = "https://github.com/strict-types/strict-types", branch = "develop" }
 aluvm = { git = "https://github.com/AluVM/rust-aluvm", branch = "develop" }
 bp-consensus = { git = "https://github.com/BP-WG/bp-core", branch = "develop" }
 bp-dbc = { git = "https://github.com/BP-WG/bp-core", branch = "develop" }
 bp-seals = { git = "https://github.com/BP-WG/bp-core", branch = "develop" }
 bp-core = { git = "https://github.com/BP-WG/bp-core", branch = "develop" }
 bp-invoice = { git = "https://github.com/BP-WG/bp-std", branch = "develop" }
-rgb-core = { git = "https://github.com/RGB-WG/rgb-core", branch = "develop" }
+rgb-core = { git = "https://github.com/RGB-WG/rgb-core", branch = "feat/fungible-nonconf" }

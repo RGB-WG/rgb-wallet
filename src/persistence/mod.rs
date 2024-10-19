@@ -51,8 +51,8 @@ pub use stash::{
     StashInconsistency, StashProvider, StashReadProvider, StashWriteProvider,
 };
 pub use state::{
-    ContractStateRead, ContractStateWrite, PersistedState, State, StateError, StateInconsistency,
-    StateProvider, StateReadProvider, StateWriteProvider,
+    ContractStateRead, ContractStateWrite, State, StateError, StateInconsistency, StateProvider,
+    StateReadProvider, StateWriteProvider,
 };
 pub use stock::{
     ComposeError, ConsignError, ContractIfaceError, FasciaError, InputError as StockInputError,

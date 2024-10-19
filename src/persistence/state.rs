@@ -25,18 +25,16 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::iter;
 
-use invoice::Amount;
 use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::validation::{ResolveWitness, WitnessResolverError};
 use rgb::vm::{ContractStateAccess, WitnessOrd};
 use rgb::{
-    AssetTag, AttachState, BlindingFactor, ContractId, DataState, Extension, Genesis, Operation,
-    RevealedAttach, RevealedData, RevealedValue, Schema, SchemaId, Transition, TransitionBundle,
-    VoidState, XWitnessId,
+    ContractId, Extension, Genesis, Operation, Schema, SchemaId, Transition, TransitionBundle,
+    XWitnessId,
 };
 
 use crate::containers::{ConsignmentExt, ToWitnessId};
-use crate::contract::OutputAssignment;
+use crate::contract::Allocation;
 use crate::persistence::{StoreTransaction, UpdateRes};
 
 #[derive(Debug, Display, Error, From)]
@@ -72,27 +70,6 @@ pub enum StateInconsistency {
     UnknownContract(ContractId),
     /// a witness {0} is absent from the state data.
     AbsentWitness(XWitnessId),
-}
-
-#[derive(Clone, Eq, PartialEq, Debug, Hash)]
-pub enum PersistedState {
-    Void,
-    Amount(Amount, BlindingFactor, AssetTag),
-    // TODO: Use RevealedData
-    Data(DataState, u128),
-    // TODO: Use RevealedAttach
-    Attachment(AttachState, u64),
-}
-
-impl PersistedState {
-    pub(crate) fn update_blinding(&mut self, blinding: BlindingFactor) {
-        match self {
-            PersistedState::Void => {}
-            PersistedState::Amount(_, b, _) => *b = blinding,
-            PersistedState::Data(_, _) => {}
-            PersistedState::Attachment(_, _) => {}
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -309,10 +286,7 @@ pub trait ContractStateRead: ContractStateAccess {
     fn contract_id(&self) -> ContractId;
     fn schema_id(&self) -> SchemaId;
     fn witness_ord(&self, witness_id: XWitnessId) -> Option<WitnessOrd>;
-    fn rights_all(&self) -> impl Iterator<Item = &OutputAssignment<VoidState>>;
-    fn fungible_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedValue>>;
-    fn data_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedData>>;
-    fn attach_all(&self) -> impl Iterator<Item = &OutputAssignment<RevealedAttach>>;
+    fn assignments(&self) -> impl Iterator<Item = &Allocation>;
 }
 
 pub trait ContractStateWrite {

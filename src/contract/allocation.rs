@@ -24,50 +24,11 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use amplify::confinement::SmallVec;
-use commit_verify::Conceal;
-use invoice::Amount;
 use rgb::vm::WitnessOrd;
-use rgb::{
-    Assign, AssignAttach, AssignData, AssignFungible, AssignRights, AssignmentType, AttachState,
-    DataState, ExposedSeal, ExposedState, OpId, Opout, RevealedAttach, RevealedData, RevealedValue,
-    TypedAssigns, VoidState, XChain, XOutputSeal, XWitnessId,
-};
+use rgb::{AssignmentType, ExposedSeal, OpId, Opout, State, XChain, XOutputSeal, XWitnessId};
 use strict_encoding::{StrictDecode, StrictDumb, StrictEncode};
 
 use crate::LIB_NAME_RGB_STD;
-
-/// Trait used by contract state. Unlike [`ExposedState`] it doesn't allow
-/// concealment of the state, i.e. may contain incomplete data without blinding
-/// factors, asset tags etc.
-pub trait KnownState: Debug + StrictDumb + StrictEncode + StrictDecode + Eq + Clone + Hash {
-    const IS_FUNGIBLE: bool;
-}
-
-impl KnownState for () {
-    const IS_FUNGIBLE: bool = false;
-}
-impl KnownState for VoidState {
-    const IS_FUNGIBLE: bool = false;
-}
-impl KnownState for DataState {
-    const IS_FUNGIBLE: bool = false;
-}
-impl KnownState for Amount {
-    const IS_FUNGIBLE: bool = true;
-}
-impl KnownState for AttachState {
-    const IS_FUNGIBLE: bool = false;
-}
-impl KnownState for RevealedValue {
-    const IS_FUNGIBLE: bool = true;
-}
-impl KnownState for RevealedData {
-    const IS_FUNGIBLE: bool = false;
-}
-impl KnownState for RevealedAttach {
-    const IS_FUNGIBLE: bool = false;
-}
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
@@ -82,8 +43,10 @@ pub struct WitnessInfo {
     pub ord: WitnessOrd,
 }
 
+/// Allocation is an owned state assignment, equipped with information about the operation defining
+/// the assignment and the witness id, containing the commitment to the operation.
 #[allow(clippy::derived_hash_with_manual_eq)]
-#[derive(Copy, Clone, Eq, Hash, Debug)]
+#[derive(Clone, Eq, Hash, Debug)]
 #[derive(StrictType, StrictDumb, StrictEncode, StrictDecode)]
 #[strict_type(lib = LIB_NAME_RGB_STD)]
 #[cfg_attr(
@@ -91,14 +54,14 @@ pub struct WitnessInfo {
     derive(Serialize, Deserialize),
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
-pub struct OutputAssignment<State: KnownState> {
+pub struct Allocation {
     pub opout: Opout,
     pub seal: XOutputSeal,
     pub state: State,
     pub witness: Option<XWitnessId>,
 }
 
-impl<State: KnownState> PartialEq for OutputAssignment<State> {
+impl PartialEq for Allocation {
     fn eq(&self, other: &Self) -> bool {
         // We ignore difference in witness transactions, state and seal definitions here
         // in order to support updates from the ephemeral state of the lightning
@@ -113,11 +76,11 @@ impl<State: KnownState> PartialEq for OutputAssignment<State> {
     }
 }
 
-impl<State: KnownState> PartialOrd for OutputAssignment<State> {
+impl PartialOrd for Allocation {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
-impl<State: KnownState> Ord for OutputAssignment<State> {
+impl Ord for Allocation {
     fn cmp(&self, other: &Self) -> Ordering {
         if self == other {
             return Ordering::Equal;
@@ -129,7 +92,7 @@ impl<State: KnownState> Ord for OutputAssignment<State> {
     }
 }
 
-impl<State: KnownState> OutputAssignment<State> {
+impl Allocation {
     /// # Panics
     ///
     /// If the processing is done on invalid stash data, the seal is
@@ -142,7 +105,7 @@ impl<State: KnownState> OutputAssignment<State> {
         ty: AssignmentType,
         no: u16,
     ) -> Self {
-        OutputAssignment {
+        Allocation {
             opout: Opout::new(opid, ty, no),
             seal: seal.try_to_output_seal(witness_id).expect(
                 "processing contract from unverified/invalid stash: witness seal chain doesn't \
@@ -164,7 +127,7 @@ impl<State: KnownState> OutputAssignment<State> {
         ty: AssignmentType,
         no: u16,
     ) -> Self {
-        OutputAssignment {
+        Allocation {
             opout: Opout::new(opid, ty, no),
             seal: seal.to_output_seal().expect(
                 "processing contract from unverified/invalid stash: seal must have txid \
@@ -175,80 +138,11 @@ impl<State: KnownState> OutputAssignment<State> {
         }
     }
 
-    /// Transmutes output assignment from one form of state to another
-    pub fn transmute<S: KnownState + From<State>>(self) -> OutputAssignment<S> {
-        OutputAssignment {
-            opout: self.opout,
-            seal: self.seal,
-            state: self.state.into(),
-            witness: self.witness,
-        }
-    }
-
     pub fn check_witness(&self, filter: &HashMap<XWitnessId, WitnessOrd>) -> bool {
         match self.witness {
             None => true,
             Some(witness_id) => {
                 !matches!(filter.get(&witness_id), None | Some(WitnessOrd::Archived))
-            }
-        }
-    }
-}
-
-pub trait TypedAssignsExt<Seal: ExposedSeal> {
-    fn reveal_seal(&mut self, seal: XChain<Seal>);
-
-    fn filter_revealed_seals(&self) -> Vec<XChain<Seal>>;
-}
-
-impl<Seal: ExposedSeal> TypedAssignsExt<Seal> for TypedAssigns<Seal> {
-    fn reveal_seal(&mut self, seal: XChain<Seal>) {
-        fn reveal<State: ExposedState, Seal: ExposedSeal>(
-            vec: &mut SmallVec<Assign<State, Seal>>,
-            revealed: XChain<Seal>,
-        ) {
-            for assign in vec.iter_mut() {
-                match assign {
-                    Assign::ConfidentialSeal { seal, state, lock }
-                        if *seal == revealed.conceal() =>
-                    {
-                        *assign = Assign::Revealed {
-                            seal: revealed,
-                            state: state.clone(),
-                            lock: *lock,
-                        }
-                    }
-                    Assign::Confidential { seal, state, lock } if *seal == revealed.conceal() => {
-                        *assign = Assign::ConfidentialState {
-                            seal: revealed,
-                            state: *state,
-                            lock: *lock,
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        match self {
-            TypedAssigns::Declarative(v) => reveal(v, seal),
-            TypedAssigns::Fungible(v) => reveal(v, seal),
-            TypedAssigns::Structured(v) => reveal(v, seal),
-            TypedAssigns::Attachment(v) => reveal(v, seal),
-        }
-    }
-
-    fn filter_revealed_seals(&self) -> Vec<XChain<Seal>> {
-        match self {
-            TypedAssigns::Declarative(s) => {
-                s.iter().filter_map(AssignRights::revealed_seal).collect()
-            }
-            TypedAssigns::Fungible(s) => {
-                s.iter().filter_map(AssignFungible::revealed_seal).collect()
-            }
-            TypedAssigns::Structured(s) => s.iter().filter_map(AssignData::revealed_seal).collect(),
-            TypedAssigns::Attachment(s) => {
-                s.iter().filter_map(AssignAttach::revealed_seal).collect()
             }
         }
     }

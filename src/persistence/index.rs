@@ -26,9 +26,8 @@ use std::fmt::Debug;
 use amplify::confinement;
 use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::{
-    Assign, AssignmentType, BundleId, ContractId, ExposedState, Extension, Genesis, GenesisSeal,
-    GraphSeal, OpId, Operation, Opout, TransitionBundle, TypedAssigns, XChain, XOutputSeal,
-    XWitnessId,
+    Assign, AssignmentType, BundleId, ContractId, Extension, Genesis, GenesisSeal, GraphSeal, OpId,
+    Operation, Opout, TransitionBundle, XChain, XOutputSeal, XWitnessId,
 };
 
 use crate::containers::{ConsignmentExt, ToWitnessId, WitnessBundle};
@@ -185,25 +184,9 @@ impl<P: IndexProvider> Index<P> {
 
     fn index_genesis(&mut self, id: ContractId, genesis: &Genesis) -> Result<(), IndexError<P>> {
         let opid = genesis.id();
-        for (type_id, assign) in genesis.assignments.iter() {
-            match assign {
-                TypedAssigns::Declarative(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-                TypedAssigns::Fungible(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-                TypedAssigns::Structured(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-                TypedAssigns::Attachment(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-            }
+        for (type_id, assigns) in genesis.assignments.iter() {
+            self.provider
+                .index_genesis_assignments(id, assigns, opid, *type_id)?;
         }
         Ok(())
     }
@@ -214,25 +197,9 @@ impl<P: IndexProvider> Index<P> {
         extension: &Extension,
     ) -> Result<(), IndexError<P>> {
         let opid = extension.id();
-        for (type_id, assign) in extension.assignments.iter() {
-            match assign {
-                TypedAssigns::Declarative(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-                TypedAssigns::Fungible(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-                TypedAssigns::Structured(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-                TypedAssigns::Attachment(vec) => {
-                    self.provider
-                        .index_genesis_assignments(id, vec, opid, *type_id)?;
-                }
-            }
+        for (type_id, assigns) in extension.assignments.iter() {
+            self.provider
+                .index_genesis_assignments(id, assigns, opid, *type_id)?;
         }
         Ok(())
     }
@@ -250,45 +217,14 @@ impl<P: IndexProvider> Index<P> {
 
         for (opid, transition) in &bundle.known_transitions {
             self.provider.register_operation(*opid, bundle_id)?;
-            for (type_id, assign) in transition.assignments.iter() {
-                match assign {
-                    TypedAssigns::Declarative(vec) => {
-                        self.provider.index_transition_assignments(
-                            contract_id,
-                            vec,
-                            *opid,
-                            *type_id,
-                            witness_id,
-                        )?;
-                    }
-                    TypedAssigns::Fungible(vec) => {
-                        self.provider.index_transition_assignments(
-                            contract_id,
-                            vec,
-                            *opid,
-                            *type_id,
-                            witness_id,
-                        )?;
-                    }
-                    TypedAssigns::Structured(vec) => {
-                        self.provider.index_transition_assignments(
-                            contract_id,
-                            vec,
-                            *opid,
-                            *type_id,
-                            witness_id,
-                        )?;
-                    }
-                    TypedAssigns::Attachment(vec) => {
-                        self.provider.index_transition_assignments(
-                            contract_id,
-                            vec,
-                            *opid,
-                            *type_id,
-                            witness_id,
-                        )?;
-                    }
-                }
+            for (type_id, assigns) in transition.assignments.iter() {
+                self.provider.index_transition_assignments(
+                    contract_id,
+                    assigns,
+                    *opid,
+                    *type_id,
+                    witness_id,
+                )?;
             }
         }
 
@@ -413,18 +349,18 @@ pub trait IndexWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
         bundle_id: BundleId,
     ) -> Result<bool, IndexWriteError<Self::Error>>;
 
-    fn index_genesis_assignments<State: ExposedState>(
+    fn index_genesis_assignments(
         &mut self,
         contract_id: ContractId,
-        vec: &[Assign<State, GenesisSeal>],
+        vec: &[Assign<GenesisSeal>],
         opid: OpId,
         type_id: AssignmentType,
     ) -> Result<(), IndexWriteError<Self::Error>>;
 
-    fn index_transition_assignments<State: ExposedState>(
+    fn index_transition_assignments(
         &mut self,
         contract_id: ContractId,
-        vec: &[Assign<State, GraphSeal>],
+        vec: &[Assign<GraphSeal>],
         opid: OpId,
         type_id: AssignmentType,
         witness_id: XWitnessId,
