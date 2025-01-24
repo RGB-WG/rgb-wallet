@@ -102,9 +102,7 @@ impl VoutSeal {
 }
 
 impl From<VoutSeal> for GraphSeal {
-    fn from(seal: VoutSeal) -> Self {
-        Self::with_blinded_vout(seal.method, seal.vout, seal.blinding)
-    }
+    fn from(seal: VoutSeal) -> Self { Self::with_blinded_vout(seal.vout, seal.blinding) }
 }
 
 /// Seal used by operation builder which can be either revealed or concealed.

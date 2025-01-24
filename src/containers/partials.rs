@@ -23,13 +23,12 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::ops::{BitOr, BitOrAssign};
-use std::{iter, vec};
+use std::vec;
 
 use amplify::confinement::{Confined, NonEmptyOrdMap, U24};
 use bp::seals::txout::CloseMethod;
 use rgb::{
-    ContractId, OpId, Operation, Transition, TransitionBundle, TxoSeal, XOutpoint, XOutputSeal,
-    XWitnessId,
+    ContractId, OpId, Operation, Transition, TransitionBundle, XOutpoint, XOutputSeal, XWitnessId,
 };
 use strict_encoding::{
     DecodeError, ReadStruct, StrictDecode, StrictDeserialize, StrictDumb, StrictEncode,
@@ -102,10 +101,6 @@ impl<T: Into<CloseMethodSet>> BitOrAssign<T> for CloseMethodSet {
     fn bitor_assign(&mut self, rhs: T) { *self = self.bitor(rhs.into()); }
 }
 
-impl From<XOutputSeal> for CloseMethodSet {
-    fn from(seal: XOutputSeal) -> Self { seal.method().into() }
-}
-
 impl From<CloseMethod> for CloseMethodSet {
     fn from(method: CloseMethod) -> Self {
         match method {
@@ -136,7 +131,9 @@ pub struct TransitionInfo {
 }
 
 impl StrictDumb for TransitionInfo {
-    fn strict_dumb() -> Self { Self::new(strict_dumb!(), [strict_dumb!()]).unwrap() }
+    fn strict_dumb() -> Self {
+        Self::new(strict_dumb!(), [strict_dumb!()], strict_dumb!()).unwrap()
+    }
 }
 
 impl PartialEq for TransitionInfo {
@@ -162,6 +159,7 @@ impl TransitionInfo {
     pub fn new(
         transition: Transition,
         seals: impl AsRef<[XOutputSeal]>,
+        method: CloseMethod,
     ) -> Result<Self, TransitionInfoError> {
         let id = transition.id();
         let seals = seals.as_ref();
@@ -170,10 +168,6 @@ impl TransitionInfo {
             seals.iter().copied().map(XOutpoint::from),
         )
         .map_err(|_| TransitionInfoError::TooMany(id))?;
-        let method = seals.first().expect("one item guaranteed").method();
-        if seals.iter().any(|s| s.method() != method) {
-            return Err(TransitionInfoError::CloseMethodDivergence(id));
-        }
         Ok(TransitionInfo {
             id,
             inputs,
@@ -189,10 +183,6 @@ pub enum TransitionInfoError {
     /// the operation produces too many state transitions which can't fit the
     /// container requirements.
     TooMany(OpId),
-
-    /// transition {0} contains inputs with different seal closing methods,
-    /// which is not allowed.
-    CloseMethodDivergence(OpId),
 }
 
 /// A batch of state transitions under different contracts which are associated
@@ -207,8 +197,8 @@ pub enum TransitionInfoError {
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
 pub struct Batch {
-    pub main: TransitionDichotomy,
-    pub blanks: Confined<Vec<TransitionDichotomy>, 0, { U24 - 1 }>,
+    pub main: TransitionInfo,
+    pub blanks: Confined<Vec<TransitionInfo>, 0, { U24 - 1 }>,
 }
 
 impl StrictSerialize for Batch {}
@@ -216,49 +206,29 @@ impl StrictDeserialize for Batch {}
 
 impl IntoIterator for Batch {
     type Item = TransitionInfo;
-    type IntoIter = iter::FlatMap<
-        vec::IntoIter<Dichotomy<TransitionInfo>>,
-        vec::IntoIter<TransitionInfo>,
-        fn(Dichotomy<TransitionInfo>) -> <Dichotomy<TransitionInfo> as IntoIterator>::IntoIter,
-    >;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         let mut vec = self.blanks.release();
         vec.push(self.main);
-        vec.into_iter().flat_map(TransitionDichotomy::into_iter)
+        vec.into_iter()
     }
 }
 
 impl Batch {
     pub fn close_method_set(&self) -> CloseMethodSet {
-        let mut methods = CloseMethodSet::from(self.main.first.method);
-        if let Some(info) = &self.main.second {
-            methods |= info.method;
-        }
-        self.blanks.iter().for_each(|i| methods |= i.first.method);
-        self.blanks
-            .iter()
-            .filter_map(|i| i.second.as_ref())
-            .for_each(|i| methods |= i.method);
+        let mut methods = CloseMethodSet::from(self.main.method);
+        self.blanks.iter().for_each(|i| methods |= i.method);
         methods
     }
 
     pub fn set_priority(&mut self, priority: u64) {
-        self.main.first.transition.nonce = priority;
-        if let Some(info) = &mut self.main.second {
-            info.transition.nonce = priority;
-        }
+        self.main.transition.nonce = priority;
         for info in &mut self.blanks {
-            info.first.transition.nonce = priority;
-            if let Some(info) = &mut info.second {
-                info.transition.nonce = priority;
-            }
+            info.transition.nonce = priority;
         }
     }
 }
-
-pub type BundleDichotomy = Dichotomy<TransitionBundle>;
-pub type TransitionDichotomy = Dichotomy<TransitionInfo>;
 
 // TODO: Move to amplify
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -372,7 +342,7 @@ impl<T> Dichotomy<T> {
 pub struct Fascia {
     pub witness: XPubWitness,
     pub anchor: AnchorSet,
-    pub bundles: NonEmptyOrdMap<ContractId, BundleDichotomy, U24>,
+    pub bundles: NonEmptyOrdMap<ContractId, TransitionBundle, U24>,
 }
 
 impl StrictDumb for Fascia {
@@ -391,8 +361,6 @@ impl Fascia {
     pub fn witness_id(&self) -> XWitnessId { self.witness.map_ref(|w| w.txid()) }
 
     pub fn into_bundles(self) -> impl IntoIterator<Item = (ContractId, TransitionBundle)> {
-        self.bundles
-            .into_iter()
-            .flat_map(|(id, d)| d.into_iter().map(move |b| (id, b)))
+        self.bundles.into_iter()
     }
 }

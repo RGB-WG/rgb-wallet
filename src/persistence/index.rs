@@ -23,7 +23,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::Debug;
 
-use amplify::confinement;
+use amplify::confinement::{self, TinyOrdSet};
 use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::{
     Assign, AssignmentType, BundleId, ContractId, ExposedState, Extension, Genesis, GenesisSeal,
@@ -250,6 +250,10 @@ impl<P: IndexProvider> Index<P> {
 
         for (opid, transition) in &bundle.known_transitions {
             self.provider.register_operation(*opid, bundle_id)?;
+            for input in &transition.inputs {
+                self.provider
+                    .register_spending(input.prev_out.op, bundle_id)?;
+            }
             for (type_id, assign) in transition.assignments.iter() {
                 match assign {
                     TypedAssigns::Declarative(vec) => {
@@ -332,6 +336,13 @@ impl<P: IndexProvider> Index<P> {
         Ok(self.provider.bundle_id_for_op(opid)?)
     }
 
+    pub(super) fn bundle_ids_children_of_op(
+        &self,
+        opid: OpId,
+    ) -> Result<TinyOrdSet<BundleId>, IndexError<P>> {
+        Ok(self.provider.bundle_ids_children_of_op(opid)?)
+    }
+
     pub(super) fn bundle_info(
         &self,
         bundle_id: BundleId,
@@ -389,6 +400,11 @@ pub trait IndexReadProvider {
 
     fn bundle_id_for_op(&self, opid: OpId) -> Result<BundleId, IndexReadError<Self::Error>>;
 
+    fn bundle_ids_children_of_op(
+        &self,
+        opid: OpId,
+    ) -> Result<TinyOrdSet<BundleId>, IndexReadError<Self::Error>>;
+
     fn bundle_info(
         &self,
         bundle_id: BundleId,
@@ -408,6 +424,12 @@ pub trait IndexWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
     ) -> Result<bool, IndexWriteError<Self::Error>>;
 
     fn register_operation(
+        &mut self,
+        opid: OpId,
+        bundle_id: BundleId,
+    ) -> Result<bool, IndexWriteError<Self::Error>>;
+
+    fn register_spending(
         &mut self,
         opid: OpId,
         bundle_id: BundleId,

@@ -107,7 +107,7 @@ impl<'c, const TRANSFER: bool> IndexedConsignment<'c, TRANSFER> {
     }
 }
 
-impl<'c, const TRANSFER: bool> ConsignmentApi for IndexedConsignment<'c, TRANSFER> {
+impl<const TRANSFER: bool> ConsignmentApi for IndexedConsignment<'_, TRANSFER> {
     fn schema(&self) -> &Schema { &self.schema }
 
     fn types(&self) -> &TypeSystem { &self.types }

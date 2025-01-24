@@ -263,6 +263,10 @@ impl WitnessBundle {
         self.anchored_bundles.iter()
     }
 
+    pub fn bundles(&self) -> impl Iterator<Item = &TransitionBundle> {
+        self.anchored_bundles.bundles()
+    }
+
     #[inline]
     pub fn known_transitions(&self) -> impl Iterator<Item = &Transition> {
         self.anchored_bundles

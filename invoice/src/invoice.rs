@@ -19,6 +19,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ops::Deref;
 use std::str::FromStr;
 
 use amplify::{ByteArray, Bytes32};
@@ -191,8 +192,6 @@ impl<T> XChainNet<T> {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Display, Error)]
 #[display(doc_comments)]
 pub enum Pay2VoutError {
-    /// invalid close method byte {0:#04x}.
-    InvalidMethod(u8),
     /// unexpected address type byte {0:#04x}.
     InvalidAddressType(u8),
     /// invalid taproot output key; specifically {0}.
@@ -200,9 +199,16 @@ pub enum Pay2VoutError {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, From)]
-pub struct Pay2Vout {
-    pub method: CloseMethod,
-    pub address: AddressPayload,
+pub struct Pay2Vout(AddressPayload);
+
+impl Pay2Vout {
+    pub fn new(address_payload: AddressPayload) -> Self { Pay2Vout(address_payload) }
+}
+
+impl Deref for Pay2Vout {
+    type Target = AddressPayload;
+
+    fn deref(&self) -> &'_ Self::Target { &self.0 }
 }
 
 impl Pay2Vout {
@@ -213,24 +219,22 @@ impl Pay2Vout {
     pub(crate) const P2TR: u8 = 5;
 }
 
-impl TryFrom<[u8; 34]> for Pay2Vout {
+impl TryFrom<[u8; 33]> for Pay2Vout {
     type Error = Pay2VoutError;
 
-    fn try_from(data: [u8; 34]) -> Result<Self, Self::Error> {
-        let method =
-            CloseMethod::try_from(data[0]).map_err(|e| Pay2VoutError::InvalidMethod(e.1))?;
-        let address = match data[1] {
-            Self::P2PKH => AddressPayload::Pkh(PubkeyHash::from_slice_unsafe(&data[2..22])),
-            Self::P2SH => AddressPayload::Sh(ScriptHash::from_slice_unsafe(&data[2..22])),
-            Self::P2WPKH => AddressPayload::Wpkh(WPubkeyHash::from_slice_unsafe(&data[2..22])),
-            Self::P2WSH => AddressPayload::Wsh(WScriptHash::from_slice_unsafe(&data[2..])),
+    fn try_from(data: [u8; 33]) -> Result<Self, Self::Error> {
+        let address = match data[0] {
+            Self::P2PKH => AddressPayload::Pkh(PubkeyHash::from_slice_unsafe(&data[1..21])),
+            Self::P2SH => AddressPayload::Sh(ScriptHash::from_slice_unsafe(&data[1..21])),
+            Self::P2WPKH => AddressPayload::Wpkh(WPubkeyHash::from_slice_unsafe(&data[1..21])),
+            Self::P2WSH => AddressPayload::Wsh(WScriptHash::from_slice_unsafe(&data[1..])),
             Self::P2TR => AddressPayload::Tr(
-                OutputPk::from_byte_array(Bytes32::from_slice_unsafe(&data[2..34]).to_byte_array())
+                OutputPk::from_byte_array(Bytes32::from_slice_unsafe(&data[1..33]).to_byte_array())
                     .map_err(Pay2VoutError::InvalidTapkey)?,
             ),
             wrong => return Err(Pay2VoutError::InvalidAddressType(wrong)),
         };
-        Ok(Self { method, address })
+        Ok(Pay2Vout(address))
     }
 }
 
@@ -251,6 +255,7 @@ pub struct RgbInvoice {
     pub operation: Option<FieldName>,
     pub assignment: Option<FieldName>,
     pub beneficiary: XChainNet<Beneficiary>,
+    pub close_methods: Vec<CloseMethod>,
     pub owned_state: InvoiceState,
     /// UTC unix timestamp
     pub expiry: Option<i64>,

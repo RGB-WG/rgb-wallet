@@ -35,8 +35,8 @@ use commit_verify::mpc::MerkleBlock;
 use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::validation::{DbcProof, Scripts};
 use rgb::{
-    AttachId, BundleId, ContractId, Extension, Genesis, GraphSeal, Identity, OpId, Operation,
-    Schema, SchemaId, TransitionBundle, XChain, XWitnessId,
+    AttachId, BundleId, ContractId, Extension, Genesis, GraphSeal, Identity, Layer1, OpId,
+    Operation, Schema, SchemaId, TransitionBundle, XChain, XWitnessId,
 };
 use strict_encoding::{FieldName, TypeName};
 use strict_types::typesys::UnknownType;
@@ -319,9 +319,11 @@ impl<P: StashProvider> Stash<P> {
 
     pub(super) fn contract_builder(
         &self,
+        close_method: CloseMethod,
         issuer: Identity,
         schema_id: SchemaId,
         iface: impl Into<IfaceRef>,
+        layer1: Layer1,
     ) -> Result<ContractBuilder, StashError<P>> {
         let schema_ifaces = self.schema(schema_id)?;
         let iface = self.iface(iface)?;
@@ -333,12 +335,14 @@ impl<P: StashProvider> Stash<P> {
         let (types, scripts) = self.extract(&schema_ifaces.schema, [iface])?;
 
         let builder = ContractBuilder::with(
+            close_method,
             issuer,
             iface.clone(),
             schema_ifaces.schema.clone(),
             iimpl.clone(),
             types,
             scripts,
+            layer1,
         );
         Ok(builder)
     }
@@ -355,11 +359,10 @@ impl<P: StashProvider> Stash<P> {
         let iimpl = schema_ifaces
             .get(iface.iface_id())
             .ok_or(StashDataError::NoIfaceImpl(schema.schema_id(), iface.iface_id()))?;
-        let genesis = self.provider.genesis(contract_id)?;
 
         let (types, _) = self.extract(&schema_ifaces.schema, [iface])?;
 
-        let mut builder = if let Some(transition_name) = transition_name {
+        let builder = if let Some(transition_name) = transition_name {
             TransitionBuilder::named_transition(
                 contract_id,
                 iface.clone(),
@@ -379,12 +382,6 @@ impl<P: StashProvider> Stash<P> {
         }
         .expect("internal inconsistency");
 
-        for (assignment_type, asset_tag) in genesis.asset_tags.iter() {
-            builder = builder
-                .add_asset_tag_raw(*assignment_type, *asset_tag)
-                .expect("tags are in bset and must not repeat");
-        }
-
         Ok(builder)
     }
 
@@ -399,11 +396,10 @@ impl<P: StashProvider> Stash<P> {
         if schema_ifaces.iimpls.is_empty() {
             return Err(StashDataError::NoIfaceImpl(schema.schema_id(), iface.iface_id()).into());
         }
-        let genesis = self.provider.genesis(contract_id)?;
 
         let (types, _) = self.extract(&schema_ifaces.schema, [iface])?;
 
-        let mut builder = if let Some(iimpl) = schema_ifaces.get(iface.iface_id()) {
+        let builder = if let Some(iimpl) = schema_ifaces.get(iface.iface_id()) {
             TransitionBuilder::blank_transition(
                 contract_id,
                 iface.clone(),
@@ -424,11 +420,6 @@ impl<P: StashProvider> Stash<P> {
                 types,
             )
         };
-        for (assignment_type, asset_tag) in genesis.asset_tags.iter() {
-            builder = builder
-                .add_asset_tag_raw(*assignment_type, *asset_tag)
-                .expect("tags are in bset and must not repeat");
-        }
 
         Ok(builder)
     }

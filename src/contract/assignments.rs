@@ -20,7 +20,7 @@
 // limitations under the License.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -30,8 +30,8 @@ use invoice::Amount;
 use rgb::vm::WitnessOrd;
 use rgb::{
     Assign, AssignAttach, AssignData, AssignFungible, AssignRights, AssignmentType, AttachState,
-    DataState, ExposedSeal, ExposedState, OpId, Opout, RevealedAttach, RevealedData, RevealedValue,
-    TypedAssigns, VoidState, XChain, XOutputSeal, XWitnessId,
+    BundleId, DataState, ExposedSeal, ExposedState, OpId, Opout, RevealedAttach, RevealedData,
+    RevealedValue, TypedAssigns, VoidState, XChain, XOutputSeal, XWitnessId,
 };
 use strict_encoding::{StrictDecode, StrictDumb, StrictEncode};
 
@@ -96,6 +96,7 @@ pub struct OutputAssignment<State: KnownState> {
     pub seal: XOutputSeal,
     pub state: State,
     pub witness: Option<XWitnessId>,
+    pub bundle_id: Option<BundleId>,
 }
 
 impl<State: KnownState> PartialEq for OutputAssignment<State> {
@@ -138,6 +139,7 @@ impl<State: KnownState> OutputAssignment<State> {
         seal: XChain<Seal>,
         witness_id: XWitnessId,
         state: State,
+        bundle_id: Option<BundleId>,
         opid: OpId,
         ty: AssignmentType,
         no: u16,
@@ -149,6 +151,7 @@ impl<State: KnownState> OutputAssignment<State> {
                  match anchor's chain",
             ),
             state,
+            bundle_id,
             witness: witness_id.into(),
         }
     }
@@ -160,6 +163,7 @@ impl<State: KnownState> OutputAssignment<State> {
     pub fn with_no_witness<Seal: ExposedSeal>(
         seal: XChain<Seal>,
         state: State,
+        bundle_id: Option<BundleId>,
         opid: OpId,
         ty: AssignmentType,
         no: u16,
@@ -171,6 +175,7 @@ impl<State: KnownState> OutputAssignment<State> {
                  information since it comes from genesis or extension",
             ),
             state,
+            bundle_id,
             witness: None,
         }
     }
@@ -181,6 +186,7 @@ impl<State: KnownState> OutputAssignment<State> {
             opout: self.opout,
             seal: self.seal,
             state: self.state.into(),
+            bundle_id: self.bundle_id,
             witness: self.witness,
         }
     }
@@ -191,6 +197,13 @@ impl<State: KnownState> OutputAssignment<State> {
             Some(witness_id) => {
                 !matches!(filter.get(&witness_id), None | Some(WitnessOrd::Archived))
             }
+        }
+    }
+
+    pub fn check_bundle(&self, invalid_bundles: &BTreeSet<BundleId>) -> bool {
+        match self.bundle_id {
+            Some(bundle_id) => !invalid_bundles.contains(&bundle_id),
+            None => true,
         }
     }
 }

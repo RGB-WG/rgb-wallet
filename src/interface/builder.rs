@@ -25,15 +25,15 @@ use std::collections::{BTreeMap, HashSet};
 
 use amplify::confinement::{Confined, SmallOrdSet, TinyOrdMap, U16};
 use amplify::{confinement, Wrapper};
+use bp::seals::txout::CloseMethod;
 use chrono::Utc;
 use invoice::{Allocation, Amount};
 use rgb::validation::Scripts;
 use rgb::{
-    validation, AltLayer1, AltLayer1Set, AssetTag, AssetTags, Assign, AssignmentType, Assignments,
-    AttachState, BlindingFactor, ContractId, DataState, ExposedSeal, FungibleType, Genesis,
-    GenesisSeal, GlobalState, GraphSeal, Identity, Input, Layer1, MetadataError, Opout,
-    OwnedStateSchema, RevealedAttach, RevealedData, RevealedValue, Schema, Transition,
-    TransitionType, TypedAssigns, XChain, XOutpoint,
+    validation, Assign, AssignmentType, Assignments, AttachState, ContractId, DataState,
+    ExposedSeal, FungibleType, Genesis, GenesisSeal, GlobalState, GraphSeal, Identity, Input,
+    Layer1, MetadataError, Opout, OwnedStateSchema, RevealedAttach, RevealedData, RevealedValue,
+    Schema, Transition, TransitionType, TypedAssigns, XChain, XOutpoint,
 };
 use rgbcore::{GlobalStateSchema, GlobalStateType, MetaType, Metadata, ValencyType};
 use strict_encoding::{FieldName, SerializeError, StrictSerialize};
@@ -73,18 +73,6 @@ pub enum BuilderError {
     /// state `{0}` provided to the builder has invalid type.
     InvalidStateType(AssignmentType),
 
-    /// asset tag for state `{0}` must be added before any fungible state of
-    /// the same type.
-    AssetTagMissed(AssignmentType),
-
-    /// asset tag for state `{0}` was already automatically created. Please call
-    /// `add_asset_tag` before adding any fungible state to the builder.
-    AssetTagAutomatic(AssignmentType),
-
-    /// state data for state type `{0}` are invalid: asset tag doesn't match the
-    /// tag defined by the contract.
-    AssetTagInvalid(AssignmentType),
-
     /// interface doesn't specifies default operation name, thus an explicit
     /// operation type must be provided with `set_operation_type` method.
     NoOperationSubtype,
@@ -94,6 +82,9 @@ pub enum BuilderError {
 
     /// {0} is not supported by the contract genesis.
     InvalidLayer1(Layer1),
+
+    /// the seal is committing to a layer 1 ({0}) different from the the contract one ({1})
+    Layer1Mismatch(Layer1, Layer1),
 
     #[from]
     #[display(inner)]
@@ -141,43 +132,52 @@ impl TxOutpoint for XOutpoint {
 pub struct ContractBuilder {
     builder: OperationBuilder<GenesisSeal>,
     testnet: bool,
-    alt_layers1: AltLayer1Set,
+    close_method: CloseMethod,
     scripts: Scripts,
     issuer: Identity,
+    layer1: Layer1,
 }
 
 impl ContractBuilder {
+    #[allow(clippy::too_many_arguments)]
     pub fn with(
+        close_method: CloseMethod,
         issuer: Identity,
         iface: Iface,
         schema: Schema,
         iimpl: IfaceImpl,
         types: TypeSystem,
         scripts: Scripts,
+        layer1: Layer1,
     ) -> Self {
         Self {
             builder: OperationBuilder::with(iface, schema, iimpl, types),
             testnet: true,
-            alt_layers1: none!(),
+            close_method,
             scripts,
             issuer,
+            layer1,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn deterministic(
+        close_method: CloseMethod,
         issuer: Identity,
         iface: Iface,
         schema: Schema,
         iimpl: IfaceImpl,
         types: TypeSystem,
         scripts: Scripts,
+        layer1: Layer1,
     ) -> Self {
         Self {
             builder: OperationBuilder::deterministic(iface, schema, iimpl, types),
             testnet: true,
-            alt_layers1: none!(),
+            close_method,
             scripts,
             issuer,
+            layer1,
         }
     }
 
@@ -188,39 +188,11 @@ impl ContractBuilder {
         self
     }
 
-    pub fn has_layer1(&self, layer1: Layer1) -> bool {
-        match layer1 {
-            Layer1::Bitcoin => true,
-            Layer1::Liquid => self.alt_layers1.contains(&AltLayer1::Liquid),
-        }
-    }
     pub fn check_layer1(&self, layer1: Layer1) -> Result<(), BuilderError> {
-        if !self.has_layer1(layer1) {
-            return Err(BuilderError::InvalidLayer1(layer1));
+        if self.layer1 != layer1 {
+            return Err(BuilderError::Layer1Mismatch(layer1, self.layer1));
         }
         Ok(())
-    }
-
-    pub fn add_layer1(mut self, layer1: AltLayer1) -> Result<Self, BuilderError> {
-        self.alt_layers1
-            .push(layer1)
-            .map_err(|_| BuilderError::TooManyLayers1)?;
-        Ok(self)
-    }
-
-    #[inline]
-    pub fn asset_tag(&self, name: impl Into<FieldName>) -> Result<AssetTag, BuilderError> {
-        self.builder.asset_tag(name)
-    }
-
-    #[inline]
-    pub fn add_asset_tag(
-        mut self,
-        name: impl Into<FieldName>,
-        asset_tag: AssetTag,
-    ) -> Result<Self, BuilderError> {
-        self.builder = self.builder.add_asset_tag(name, asset_tag)?;
-        Ok(self)
     }
 
     #[inline]
@@ -293,24 +265,7 @@ impl ContractBuilder {
         let name = name.into();
         let seal = seal.into();
         self.check_layer1(seal.layer1())?;
-        self.builder.init_asset_tag(name.clone())?;
         self.builder = self.builder.add_fungible_state(name, seal, value)?;
-        Ok(self)
-    }
-
-    pub fn add_fungible_state_det(
-        mut self,
-        name: impl Into<FieldName>,
-        seal: impl Into<BuilderSeal<GenesisSeal>>,
-        value: impl Into<Amount>,
-        blinding: BlindingFactor,
-    ) -> Result<Self, BuilderError> {
-        let name = name.into();
-        let seal = seal.into();
-        self.check_layer1(seal.layer1())?;
-        let tag = self.builder.init_asset_tag(name.clone())?;
-        let state = RevealedValue::with_blinding(value.into(), blinding, tag);
-        self.builder = self.builder.add_fungible_state_det(name, seal, state)?;
         Ok(self)
     }
 
@@ -382,17 +337,16 @@ impl ContractBuilder {
     }
 
     fn issue_contract_raw(self, timestamp: i64) -> Result<ValidConsignment<false>, BuilderError> {
-        let (schema, iface, iimpl, global, assignments, types, asset_tags) =
-            self.builder.complete(None);
+        let (schema, iface, iimpl, global, assignments, types) = self.builder.complete();
 
         let genesis = Genesis {
             ffv: none!(),
             schema_id: schema.schema_id(),
             flags: none!(),
             timestamp,
+            layer1: self.layer1,
             testnet: self.testnet,
-            alt_layers1: self.alt_layers1,
-            asset_tags,
+            close_method: self.close_method,
             metadata: empty!(),
             globals: global,
             assignments,
@@ -564,31 +518,6 @@ impl TransitionBuilder {
     }
 
     #[inline]
-    pub fn asset_tag(&self, name: impl Into<FieldName>) -> Result<AssetTag, BuilderError> {
-        self.builder.asset_tag(name)
-    }
-
-    #[inline]
-    pub fn add_asset_tag(
-        mut self,
-        name: impl Into<FieldName>,
-        asset_tag: AssetTag,
-    ) -> Result<Self, BuilderError> {
-        self.builder = self.builder.add_asset_tag(name, asset_tag)?;
-        Ok(self)
-    }
-
-    #[inline]
-    pub fn add_asset_tag_raw(
-        mut self,
-        type_id: AssignmentType,
-        asset_tag: AssetTag,
-    ) -> Result<Self, BuilderError> {
-        self.builder = self.builder.add_asset_tag_raw(type_id, asset_tag)?;
-        Ok(self)
-    }
-
-    #[inline]
     pub fn add_metadata(
         mut self,
         name: impl Into<FieldName>,
@@ -658,10 +587,6 @@ impl TransitionBuilder {
         seal: impl Into<BuilderSeal<GraphSeal>>,
         state: PersistedState,
     ) -> Result<Self, BuilderError> {
-        if matches!(state, PersistedState::Amount(_, _, tag) if self.builder.asset_tag_raw(type_id)? != tag)
-        {
-            return Err(BuilderError::AssetTagInvalid(type_id));
-        }
         self.builder = self.builder.add_owned_state_raw(type_id, seal, state)?;
         Ok(self)
     }
@@ -684,16 +609,6 @@ impl TransitionBuilder {
         self.add_fungible_state(assignment_name, seal.into(), value)
     }
 
-    pub fn add_fungible_default_state_det(
-        self,
-        seal: impl Into<BuilderSeal<GraphSeal>>,
-        value: u64,
-        blinding: BlindingFactor,
-    ) -> Result<Self, BuilderError> {
-        let assignment_name = self.default_assignment()?.clone();
-        self.add_fungible_state_det(assignment_name, seal.into(), value, blinding)
-    }
-
     pub fn add_fungible_state(
         mut self,
         name: impl Into<FieldName>,
@@ -704,34 +619,13 @@ impl TransitionBuilder {
         Ok(self)
     }
 
-    pub fn add_fungible_state_det(
-        mut self,
-        name: impl Into<FieldName>,
-        seal: impl Into<BuilderSeal<GraphSeal>>,
-        value: impl Into<Amount>,
-        blinding: BlindingFactor,
-    ) -> Result<Self, BuilderError> {
-        let name = name.into();
-        let type_id = self
-            .builder
-            .assignments_type(&name)
-            .ok_or(BuilderError::AssignmentNotFound(name.clone()))?;
-        let tag = self.builder.asset_tag_raw(type_id)?;
-        let state = RevealedValue::with_blinding(value.into(), blinding, tag);
-
-        self.builder = self.builder.add_fungible_state_det(name, seal, state)?;
-        Ok(self)
-    }
-
     pub fn add_fungible_state_raw(
         mut self,
         type_id: AssignmentType,
         seal: impl Into<BuilderSeal<GraphSeal>>,
         value: impl Into<Amount>,
-        blinding: BlindingFactor,
     ) -> Result<Self, BuilderError> {
-        let tag = self.builder.asset_tag_raw(type_id)?;
-        let state = RevealedValue::with_blinding(value.into(), blinding, tag);
+        let state = RevealedValue::new(value.into());
         self.builder = self.builder.add_fungible_state_raw(type_id, seal, state)?;
         Ok(self)
     }
@@ -800,7 +694,7 @@ impl TransitionBuilder {
     pub fn has_inputs(&self) -> bool { !self.inputs.is_empty() }
 
     pub fn complete_transition(self) -> Result<Transition, BuilderError> {
-        let (_, _, _, global, assignments, _, _) = self.builder.complete(Some(&self.inputs));
+        let (_, _, _, global, assignments, _) = self.builder.complete();
 
         let transition = Transition {
             ffv: none!(),
@@ -828,7 +722,6 @@ pub struct OperationBuilder<Seal: ExposedSeal> {
     schema: Schema,
     iface: Iface,
     iimpl: IfaceImpl,
-    asset_tags: AssetTags,
     deterministic: bool,
 
     global: GlobalState,
@@ -849,7 +742,6 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             schema,
             iface,
             iimpl,
-            asset_tags: none!(),
             deterministic: false,
 
             global: none!(),
@@ -868,7 +760,6 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             schema,
             iface,
             iimpl,
-            asset_tags: none!(),
             deterministic: true,
 
             global: none!(),
@@ -938,68 +829,6 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             .expect("schema should match interface: must be checked by the constructor")
     }
 
-    pub fn asset_tag(&self, name: impl Into<FieldName>) -> Result<AssetTag, BuilderError> {
-        let name = name.into();
-        let type_id = self
-            .assignments_type(&name)
-            .ok_or(BuilderError::AssignmentNotFound(name.clone()))?;
-        self.asset_tag_raw(type_id)
-    }
-
-    #[inline]
-    fn asset_tag_raw(&self, type_id: AssignmentType) -> Result<AssetTag, BuilderError> {
-        self.asset_tags
-            .get(&type_id)
-            .ok_or(BuilderError::AssetTagMissed(type_id))
-            .copied()
-    }
-
-    #[inline]
-    pub fn add_asset_tag(
-        self,
-        name: impl Into<FieldName>,
-        asset_tag: AssetTag,
-    ) -> Result<Self, BuilderError> {
-        let name = name.into();
-        let type_id = self
-            .assignments_type(&name)
-            .ok_or(BuilderError::AssignmentNotFound(name))?;
-
-        self.add_asset_tag_raw(type_id, asset_tag)
-    }
-
-    #[inline]
-    pub fn add_asset_tag_raw(
-        mut self,
-        type_id: AssignmentType,
-        asset_tag: AssetTag,
-    ) -> Result<Self, BuilderError> {
-        if self.fungible.contains_key(&type_id) {
-            return Err(BuilderError::AssetTagAutomatic(type_id));
-        }
-
-        self.asset_tags.insert(type_id, asset_tag)?;
-        Ok(self)
-    }
-
-    pub fn init_asset_tag(&mut self, name: impl Into<FieldName>) -> Result<AssetTag, BuilderError> {
-        let name = name.into();
-        let type_id = self
-            .assignments_type(&name)
-            .ok_or(BuilderError::AssignmentNotFound(name))?;
-
-        if let Some(tag) = self.asset_tags.get(&type_id) {
-            Ok(*tag)
-        } else {
-            let asset_tag = AssetTag::new_random(
-                format!("{}/{}", self.schema.schema_id(), self.iface.iface_id()),
-                type_id,
-            );
-            self.asset_tags.insert(type_id, asset_tag)?;
-            Ok(asset_tag)
-        }
-    }
-
     pub fn add_metadata(
         mut self,
         name: impl Into<FieldName>,
@@ -1064,16 +893,8 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
     ) -> Result<Self, BuilderError> {
         match state {
             PersistedState::Void => self.add_rights_raw(type_id, seal),
-            PersistedState::Amount(value, blinding, tag) => {
-                if self.asset_tag_raw(type_id)? != tag {
-                    return Err(BuilderError::AssetTagInvalid(type_id));
-                }
-
-                self.add_fungible_state_raw(
-                    type_id,
-                    seal,
-                    RevealedValue::with_blinding(value, blinding, tag),
-                )
+            PersistedState::Amount(value) => {
+                self.add_fungible_state_raw(type_id, seal, RevealedValue::new(value))
             }
             PersistedState::Data(data, salt) => {
                 self.add_data_raw(type_id, seal, RevealedData::with_salt(data, salt))
@@ -1129,39 +950,13 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
         seal: impl Into<BuilderSeal<Seal>>,
         value: impl Into<Amount>,
     ) -> Result<Self, BuilderError> {
-        debug_assert!(
-            !self.deterministic,
-            "for adding state to deterministic contracts you have to use add_*_det methods"
-        );
-
         let name = name.into();
 
         let type_id = self
             .assignments_type(&name)
             .ok_or(BuilderError::AssignmentNotFound(name))?;
-        let tag = self.asset_tag_raw(type_id)?;
 
-        let state = RevealedValue::new_random_blinding(value.into(), tag);
-        self.add_fungible_state_raw(type_id, seal, state)
-    }
-
-    fn add_fungible_state_det(
-        self,
-        name: impl Into<FieldName>,
-        seal: impl Into<BuilderSeal<Seal>>,
-        state: RevealedValue,
-    ) -> Result<Self, BuilderError> {
-        debug_assert!(
-            self.deterministic,
-            "to add owned state in deterministic way the builder has to be created using \
-             deterministic constructor"
-        );
-
-        let name = name.into();
-
-        let type_id = self
-            .assignments_type(&name)
-            .ok_or(BuilderError::AssignmentNotFound(name))?;
+        let state = RevealedValue::new(value.into());
         self.add_fungible_state_raw(type_id, seal, state)
     }
 
@@ -1324,53 +1119,23 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
         Ok(self)
     }
 
-    fn complete(
-        self,
-        inputs: Option<&TinyOrdMap<Input, PersistedState>>,
-    ) -> (Schema, Iface, IfaceImpl, GlobalState, Assignments<Seal>, TypeSystem, AssetTags) {
+    fn complete(self) -> (Schema, Iface, IfaceImpl, GlobalState, Assignments<Seal>, TypeSystem) {
         let owned_state = self.fungible.into_iter().map(|(id, vec)| {
-            let mut blindings = Vec::with_capacity(vec.len());
-            let mut vec = vec
+            let vec = vec
                 .into_iter()
-                .map(|(seal, value)| {
-                    blindings.push(value.blinding);
-                    match seal {
-                        BuilderSeal::Revealed(seal) => Assign::Revealed {
-                            seal,
-                            state: value,
-                            lock: none!(),
-                        },
-                        BuilderSeal::Concealed(seal) => Assign::ConfidentialSeal {
-                            seal,
-                            state: value,
-                            lock: none!(),
-                        },
-                    }
+                .map(|(seal, value)| match seal {
+                    BuilderSeal::Revealed(seal) => Assign::Revealed {
+                        seal,
+                        state: value,
+                        lock: none!(),
+                    },
+                    BuilderSeal::Concealed(seal) => Assign::ConfidentialSeal {
+                        seal,
+                        state: value,
+                        lock: none!(),
+                    },
                 })
                 .collect::<Vec<_>>();
-            if let Some(assignment) = vec.last_mut() {
-                blindings.pop();
-                let state = assignment
-                    .as_revealed_state_mut()
-                    .expect("builder always operates revealed state");
-                let mut inputs = inputs
-                    .map(|i| {
-                        i.iter()
-                            .filter(|(out, _)| out.prev_out.ty == id)
-                            .map(|(_, ts)| match ts {
-                                PersistedState::Amount(_, blinding, _) => *blinding,
-                                _ => panic!("previous state has invalid type"),
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if inputs.is_empty() {
-                    inputs = vec![BlindingFactor::EMPTY];
-                }
-                state.blinding = BlindingFactor::zero_balanced(inputs, blindings).expect(
-                    "malformed set of blinding factors; probably random generator is broken",
-                );
-            }
             let state = Confined::try_from_iter(vec).expect("at least one element");
             let state = TypedAssigns::Fungible(state);
             (id, state)
@@ -1443,6 +1208,6 @@ impl<Seal: ExposedSeal> OperationBuilder<Seal> {
             .extend(Assignments::from_inner(owned_attachments).into_inner())
             .expect("too many assignments");
 
-        (self.schema, self.iface, self.iimpl, self.global, assignments, self.types, self.asset_tags)
+        (self.schema, self.iface, self.iimpl, self.global, assignments, self.types)
     }
 }

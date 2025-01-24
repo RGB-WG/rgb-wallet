@@ -50,10 +50,7 @@ pub use disclosure::Disclosure;
 pub use file::{FileContent, LoadError, UniversalFile};
 pub use indexed::IndexedConsignment;
 pub use kit::{Kit, KitId, ValidKit};
-pub use partials::{
-    Batch, BundleDichotomy, CloseMethodSet, Dichotomy, Fascia, TransitionDichotomy, TransitionInfo,
-    TransitionInfoError,
-};
+pub use partials::{Batch, CloseMethodSet, Dichotomy, Fascia, TransitionInfo, TransitionInfoError};
 pub use seal::{BuilderSeal, VoutSeal};
 pub use suppl::{
     AnnotationName, Annotations, ContentRef, SupplId, SupplItem, SupplMap, SupplSub, Supplement,

@@ -21,6 +21,7 @@
 
 use std::str::FromStr;
 
+use bp::seals::txout::CloseMethod;
 use rgb::ContractId;
 use strict_encoding::{FieldName, TypeName};
 
@@ -40,6 +41,7 @@ impl RgbInvoiceBuilder {
             operation: None,
             assignment: None,
             beneficiary: beneficiary.into(),
+            close_methods: vec![],
             owned_state: InvoiceState::Void,
             expiry: None,
             unknown_query: none!(),
@@ -119,6 +121,11 @@ impl RgbInvoiceBuilder {
         let coins = amount.floor();
         let cents = amount - coins;
         self.set_amount(coins as u64, cents as u64, precision)
+    }
+
+    pub fn set_close_methods(mut self, close_methods: Vec<CloseMethod>) -> Self {
+        self.0.close_methods = close_methods;
+        self
     }
 
     pub fn set_expiry_timestamp(mut self, expiry: i64) -> Self {
