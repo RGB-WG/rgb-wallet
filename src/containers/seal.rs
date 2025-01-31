@@ -24,7 +24,7 @@
 use bp::seals::txout::{BlindSeal, CloseMethod, SealTxid};
 use bp::secp256k1::rand::{thread_rng, RngCore};
 use bp::Vout;
-use rgb::{GraphSeal, Layer1, SecretSeal, TxoSeal, XChain};
+use rgb::{GraphSeal, SecretSeal, TxoSeal};
 
 use crate::LIB_NAME_RGB_STD;
 
@@ -102,28 +102,17 @@ impl VoutSeal {
 }
 
 impl From<VoutSeal> for GraphSeal {
-    fn from(seal: VoutSeal) -> Self {
-        Self::with_blinded_vout(seal.method, seal.vout, seal.blinding)
-    }
+    fn from(seal: VoutSeal) -> Self { Self::with_blinded_vout(seal.vout, seal.blinding) }
 }
 
 /// Seal used by operation builder which can be either revealed or concealed.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, From)]
 pub enum BuilderSeal<Seal: TxoSeal + Ord> {
-    Revealed(XChain<Seal>),
+    Revealed(Seal),
     #[from]
-    Concealed(XChain<SecretSeal>),
+    Concealed(SecretSeal),
 }
 
-impl<Id: SealTxid> From<XChain<BlindSeal<Id>>> for BuilderSeal<BlindSeal<Id>> {
-    fn from(seal: XChain<BlindSeal<Id>>) -> Self { BuilderSeal::Revealed(seal) }
-}
-
-impl<Seal: TxoSeal + Ord> BuilderSeal<Seal> {
-    pub fn layer1(&self) -> Layer1 {
-        match self {
-            BuilderSeal::Revealed(x) => x.layer1(),
-            BuilderSeal::Concealed(x) => x.layer1(),
-        }
-    }
+impl<Id: SealTxid> From<BlindSeal<Id>> for BuilderSeal<BlindSeal<Id>> {
+    fn from(seal: BlindSeal<Id>) -> Self { BuilderSeal::Revealed(seal) }
 }

@@ -24,11 +24,11 @@ use std::ops::Deref;
 
 use rgb::validation::{ConsignmentApi, EAnchor, OpRef, Scripts};
 use rgb::{
-    BundleId, Extension, Genesis, OpId, Operation, Schema, Transition, TransitionBundle, XWitnessId,
+    BundleId, Extension, Genesis, OpId, Operation, Schema, Transition, TransitionBundle, Txid,
 };
 use strict_types::TypeSystem;
 
-use super::{Consignment, XPubWitness};
+use super::{Consignment, PubWitness};
 use crate::containers::anchors::ToWitnessId;
 
 // TODO: Transform consignment into this type instead of composing over it
@@ -36,12 +36,12 @@ use crate::containers::anchors::ToWitnessId;
 pub struct IndexedConsignment<'c, const TRANSFER: bool> {
     consignment: &'c Consignment<TRANSFER>,
     scripts: Scripts,
-    anchor_idx: BTreeMap<BundleId, (XWitnessId, EAnchor)>,
+    anchor_idx: BTreeMap<BundleId, (Txid, EAnchor)>,
     bundle_idx: BTreeMap<BundleId, &'c TransitionBundle>,
-    op_witness_idx: BTreeMap<OpId, XWitnessId>,
+    op_witness_idx: BTreeMap<OpId, Txid>,
     op_bundle_idx: BTreeMap<OpId, BundleId>,
     extension_idx: BTreeMap<OpId, &'c Extension>,
-    witness_idx: BTreeMap<XWitnessId, &'c XPubWitness>,
+    witness_idx: BTreeMap<Txid, &'c PubWitness>,
 }
 
 impl<const TRANSFER: bool> Deref for IndexedConsignment<'_, TRANSFER> {
@@ -62,14 +62,15 @@ impl<'c, const TRANSFER: bool> IndexedConsignment<'c, TRANSFER> {
             witness_idx
                 .insert(witness_bundle.pub_witness.to_witness_id(), &witness_bundle.pub_witness);
             let witness_id = witness_bundle.pub_witness.to_witness_id();
-            for (anchor, bundle) in witness_bundle.anchored_bundles() {
-                let bundle_id = bundle.bundle_id();
-                bundle_idx.insert(bundle_id, bundle);
-                anchor_idx.insert(bundle_id, (witness_id, anchor));
-                for opid in bundle.known_transitions.keys() {
-                    op_witness_idx.insert(*opid, witness_id);
-                    op_bundle_idx.insert(*opid, bundle_id);
-                }
+            let anchored_bundle = witness_bundle.anchored_bundle();
+            let anchor = anchored_bundle.eanchor();
+            let bundle = anchored_bundle.bundle();
+            let bundle_id = bundle.bundle_id();
+            bundle_idx.insert(bundle_id, bundle);
+            anchor_idx.insert(bundle_id, (witness_id, anchor));
+            for opid in bundle.known_transitions.keys() {
+                op_witness_idx.insert(*opid, witness_id);
+                op_bundle_idx.insert(*opid, bundle_id);
             }
         }
         for extension in &consignment.extensions {
@@ -102,12 +103,12 @@ impl<'c, const TRANSFER: bool> IndexedConsignment<'c, TRANSFER> {
             .and_then(|bundle| bundle.known_transitions.get(&opid))
     }
 
-    pub fn pub_witness(&self, id: XWitnessId) -> Option<&XPubWitness> {
+    pub fn pub_witness(&self, id: Txid) -> Option<&PubWitness> {
         self.witness_idx.get(&id).copied()
     }
 }
 
-impl<'c, const TRANSFER: bool> ConsignmentApi for IndexedConsignment<'c, TRANSFER> {
+impl<const TRANSFER: bool> ConsignmentApi for IndexedConsignment<'_, TRANSFER> {
     fn schema(&self) -> &Schema { &self.schema }
 
     fn types(&self) -> &TypeSystem { &self.types }
@@ -137,11 +138,9 @@ impl<'c, const TRANSFER: bool> ConsignmentApi for IndexedConsignment<'c, TRANSFE
         self.bundle_idx.get(&bundle_id).copied()
     }
 
-    fn anchor(&self, bundle_id: BundleId) -> Option<(XWitnessId, &EAnchor)> {
+    fn anchor(&self, bundle_id: BundleId) -> Option<(Txid, &EAnchor)> {
         self.anchor_idx.get(&bundle_id).map(|(id, set)| (*id, set))
     }
 
-    fn op_witness_id(&self, opid: OpId) -> Option<XWitnessId> {
-        self.op_witness_idx.get(&opid).copied()
-    }
+    fn op_witness_id(&self, opid: OpId) -> Option<Txid> { self.op_witness_idx.get(&opid).copied() }
 }

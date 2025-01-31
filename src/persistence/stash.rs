@@ -35,8 +35,8 @@ use commit_verify::mpc::MerkleBlock;
 use nonasync::persistence::{CloneNoPersistence, Persisting};
 use rgb::validation::{DbcProof, Scripts};
 use rgb::{
-    AttachId, BundleId, ContractId, Extension, Genesis, GraphSeal, Identity, OpId, Operation,
-    Schema, SchemaId, TransitionBundle, XChain, XWitnessId,
+    AttachId, BundleId, ChainNet, ContractId, Extension, Genesis, GraphSeal, Identity, OpId,
+    Operation, Schema, SchemaId, TransitionBundle, Txid,
 };
 use strict_encoding::{FieldName, TypeName};
 use strict_types::typesys::UnknownType;
@@ -119,10 +119,10 @@ pub enum StashInconsistency {
     OperationAbsent(OpId),
 
     /// information about witness {0} is absent.
-    WitnessAbsent(XWitnessId),
+    WitnessAbsent(Txid),
 
     /// witness {0} for the bundle {1} misses contract {2} information in {3} anchor.
-    WitnessMissesContract(XWitnessId, BundleId, ContractId, CloseMethod),
+    WitnessMissesContract(Txid, BundleId, ContractId, CloseMethod),
 
     /// bundle {0} is absent.
     BundleAbsent(BundleId),
@@ -261,7 +261,7 @@ impl<P: StashProvider> Stash<P> {
     pub(super) fn bundle(&self, bundle_id: BundleId) -> Result<&TransitionBundle, StashError<P>> {
         Ok(self.provider.bundle(bundle_id)?)
     }
-    pub(super) fn witness(&self, witness_id: XWitnessId) -> Result<&SealWitness, StashError<P>> {
+    pub(super) fn witness(&self, witness_id: Txid) -> Result<&SealWitness, StashError<P>> {
         Ok(self.provider.witness(witness_id)?)
     }
 
@@ -322,6 +322,7 @@ impl<P: StashProvider> Stash<P> {
         issuer: Identity,
         schema_id: SchemaId,
         iface: impl Into<IfaceRef>,
+        chain_net: ChainNet,
     ) -> Result<ContractBuilder, StashError<P>> {
         let schema_ifaces = self.schema(schema_id)?;
         let iface = self.iface(iface)?;
@@ -339,6 +340,7 @@ impl<P: StashProvider> Stash<P> {
             iimpl.clone(),
             types,
             scripts,
+            chain_net,
         );
         Ok(builder)
     }
@@ -355,11 +357,10 @@ impl<P: StashProvider> Stash<P> {
         let iimpl = schema_ifaces
             .get(iface.iface_id())
             .ok_or(StashDataError::NoIfaceImpl(schema.schema_id(), iface.iface_id()))?;
-        let genesis = self.provider.genesis(contract_id)?;
 
         let (types, _) = self.extract(&schema_ifaces.schema, [iface])?;
 
-        let mut builder = if let Some(transition_name) = transition_name {
+        let builder = if let Some(transition_name) = transition_name {
             TransitionBuilder::named_transition(
                 contract_id,
                 iface.clone(),
@@ -379,12 +380,6 @@ impl<P: StashProvider> Stash<P> {
         }
         .expect("internal inconsistency");
 
-        for (assignment_type, asset_tag) in genesis.asset_tags.iter() {
-            builder = builder
-                .add_asset_tag_raw(*assignment_type, *asset_tag)
-                .expect("tags are in bset and must not repeat");
-        }
-
         Ok(builder)
     }
 
@@ -399,11 +394,10 @@ impl<P: StashProvider> Stash<P> {
         if schema_ifaces.iimpls.is_empty() {
             return Err(StashDataError::NoIfaceImpl(schema.schema_id(), iface.iface_id()).into());
         }
-        let genesis = self.provider.genesis(contract_id)?;
 
         let (types, _) = self.extract(&schema_ifaces.schema, [iface])?;
 
-        let mut builder = if let Some(iimpl) = schema_ifaces.get(iface.iface_id()) {
+        let builder = if let Some(iimpl) = schema_ifaces.get(iface.iface_id()) {
             TransitionBuilder::blank_transition(
                 contract_id,
                 iface.clone(),
@@ -424,11 +418,6 @@ impl<P: StashProvider> Stash<P> {
                 types,
             )
         };
-        for (assignment_type, asset_tag) in genesis.asset_tags.iter() {
-            builder = builder
-                .add_asset_tag_raw(*assignment_type, *asset_tag)
-                .expect("tags are in bset and must not repeat");
-        }
 
         Ok(builder)
     }
@@ -552,92 +541,37 @@ impl<P: StashProvider> Stash<P> {
     ) -> Result<(), StashError<P>> {
         let WitnessBundle {
             pub_witness,
-            anchored_bundles,
+            anchored_bundle,
         } = witness_bundle;
 
         // TODO: Save pub witness transaction SPVs
 
-        let mut anchors = Vec::with_capacity(2);
-        for (anchor, bundle) in anchored_bundles.into_iter() {
-            let bundle_id = bundle.bundle_id();
-            self.consume_bundle(bundle)?;
+        let eanchor = anchored_bundle.eanchor();
+        let bundle = anchored_bundle.into_bundle();
 
-            let proto = mpc::ProtocolId::from_byte_array(contract_id.to_byte_array());
-            let msg = mpc::Message::from_byte_array(bundle_id.to_byte_array());
-            let merkle_block = MerkleBlock::with(&anchor.mpc_proof, proto, msg)?;
-            anchors.push(Anchor::new(merkle_block, anchor.dbc_proof));
-        }
+        let bundle_id = bundle.bundle_id();
+        self.consume_bundle(bundle)?;
 
-        let anchors = match (anchors.pop().unwrap(), anchors.pop()) {
-            (
-                Anchor {
-                    dbc_proof: DbcProof::Opret(opret),
-                    mpc_proof,
-                    ..
-                },
-                None,
-            ) => AnchorSet::Opret(Anchor::new(mpc_proof, opret)),
-            (
-                Anchor {
-                    dbc_proof: DbcProof::Tapret(tapret),
-                    mpc_proof,
-                    ..
-                },
-                None,
-            ) => AnchorSet::Tapret(Anchor::new(mpc_proof, tapret)),
-            (
-                Anchor {
-                    dbc_proof: DbcProof::Tapret(tapret),
-                    mpc_proof: mpc_proof_tapret,
-                    ..
-                },
-                Some(Anchor {
-                    dbc_proof: DbcProof::Opret(opret),
-                    mpc_proof: mpc_proof_opret,
-                    ..
-                }),
-            )
-            | (
-                Anchor {
-                    dbc_proof: DbcProof::Opret(opret),
-                    mpc_proof: mpc_proof_opret,
-                    ..
-                },
-                Some(Anchor {
-                    dbc_proof: DbcProof::Tapret(tapret),
-                    mpc_proof: mpc_proof_tapret,
-                    ..
-                }),
-            ) => AnchorSet::Double {
-                tapret: Anchor::new(mpc_proof_tapret, tapret),
-                opret: Anchor::new(mpc_proof_opret, opret),
-            },
-            (
-                Anchor {
-                    dbc_proof: DbcProof::Opret(_),
-                    ..
-                },
-                Some(Anchor {
-                    dbc_proof: DbcProof::Opret(_),
-                    ..
-                }),
-            )
-            | (
-                Anchor {
-                    dbc_proof: DbcProof::Tapret(_),
-                    ..
-                },
-                Some(Anchor {
-                    dbc_proof: DbcProof::Tapret(_),
-                    ..
-                }),
-            ) => unreachable!(
-                "these combinations must be prevented at the `AnchoredBundles` structure level"
-            ),
+        let proto = mpc::ProtocolId::from_byte_array(contract_id.to_byte_array());
+        let msg = mpc::Message::from_byte_array(bundle_id.to_byte_array());
+        let merkle_block = MerkleBlock::with(&eanchor.mpc_proof, proto, msg)?;
+        let anchor = Anchor::new(merkle_block, eanchor.dbc_proof);
+
+        let anchor = match anchor {
+            Anchor {
+                dbc_proof: DbcProof::Opret(opret),
+                mpc_proof,
+                ..
+            } => AnchorSet::Opret(Anchor::new(mpc_proof, opret)),
+            Anchor {
+                dbc_proof: DbcProof::Tapret(opret),
+                mpc_proof,
+                ..
+            } => AnchorSet::Tapret(Anchor::new(mpc_proof, opret)),
         };
         let witness = SealWitness {
             public: pub_witness.clone(),
-            anchors,
+            anchor,
         };
         self.consume_witness(witness)?;
 
@@ -648,7 +582,7 @@ impl<P: StashProvider> Stash<P> {
         let witness = match self.provider.witness(witness.witness_id()).cloned() {
             Ok(mut w) => {
                 w.public = w.public.clone().merge_reveal(witness.public)?;
-                w.anchors = w.anchors.clone().merge_reveal(witness.anchors)?;
+                w.anchor = w.anchor.clone().merge_reveal(witness.anchor)?;
                 w
             }
             Err(_) => witness,
@@ -672,10 +606,7 @@ impl<P: StashProvider> Stash<P> {
             .map_err(StashError::WriteProvider)
     }
 
-    pub(crate) fn store_secret_seal(
-        &mut self,
-        seal: XChain<GraphSeal>,
-    ) -> Result<bool, StashError<P>> {
+    pub(crate) fn store_secret_seal(&mut self, seal: GraphSeal) -> Result<bool, StashError<P>> {
         self.begin_transaction()?;
         let seal = self
             .provider
@@ -748,19 +679,16 @@ pub trait StashReadProvider {
     ) -> Result<impl Iterator<Item = Supplement>, Self::Error>;
 
     fn sigs_for(&self, content_id: &ContentId) -> Result<Option<&ContentSigs>, Self::Error>;
-    fn witness_ids(&self) -> Result<impl Iterator<Item = XWitnessId>, Self::Error>;
+    fn witness_ids(&self) -> Result<impl Iterator<Item = Txid>, Self::Error>;
     fn bundle_ids(&self) -> Result<impl Iterator<Item = BundleId>, Self::Error>;
     fn bundle(&self, bundle_id: BundleId) -> Result<&TransitionBundle, ProviderError<Self::Error>>;
     fn extension_ids(&self) -> Result<impl Iterator<Item = OpId>, Self::Error>;
     fn extension(&self, op_id: OpId) -> Result<&Extension, ProviderError<Self::Error>>;
-    fn witness(&self, witness_id: XWitnessId) -> Result<&SealWitness, ProviderError<Self::Error>>;
+    fn witness(&self, witness_id: Txid) -> Result<&SealWitness, ProviderError<Self::Error>>;
 
-    fn taprets(&self) -> Result<impl Iterator<Item = (XWitnessId, TapretCommitment)>, Self::Error>;
-    fn seal_secret(
-        &self,
-        secret: XChain<SecretSeal>,
-    ) -> Result<Option<XChain<GraphSeal>>, Self::Error>;
-    fn secret_seals(&self) -> Result<impl Iterator<Item = XChain<GraphSeal>>, Self::Error>;
+    fn taprets(&self) -> Result<impl Iterator<Item = (Txid, TapretCommitment)>, Self::Error>;
+    fn seal_secret(&self, secret: SecretSeal) -> Result<Option<GraphSeal>, Self::Error>;
+    fn secret_seals(&self) -> Result<impl Iterator<Item = GraphSeal>, Self::Error>;
 }
 
 pub trait StashWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
@@ -787,5 +715,5 @@ pub trait StashWriteProvider: StoreTransaction<TransactionErr = Self::Error> {
     fn import_sigs<I>(&mut self, content_id: ContentId, sigs: I) -> Result<(), Self::Error>
     where I: IntoIterator<Item = (Identity, SigBlob)>;
 
-    fn add_secret_seal(&mut self, seal: XChain<GraphSeal>) -> Result<bool, Self::Error>;
+    fn add_secret_seal(&mut self, seal: GraphSeal) -> Result<bool, Self::Error>;
 }

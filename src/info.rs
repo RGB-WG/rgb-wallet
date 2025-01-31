@@ -20,12 +20,12 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::fmt::{self, Debug, Display, Formatter, Write};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::str::FromStr;
 
 use amplify::confinement::TinyOrdSet;
 use chrono::{DateTime, TimeZone, Utc};
-use rgb::{AltLayer1Set, ContractId, Genesis, Identity, Operation, SchemaId};
+use rgb::{ChainNet, ContractId, Genesis, Identity, Operation, SchemaId};
 use strict_encoding::stl::{AlphaCapsLodash, AlphaNumLodash};
 use strict_encoding::{FieldName, RString, StrictDeserialize, StrictSerialize, TypeName};
 
@@ -281,8 +281,7 @@ pub struct ContractInfo {
     pub schema_id: SchemaId,
     pub issuer: Identity,
     pub issued_at: DateTime<Utc>,
-    pub testnet: bool,
-    pub alt_layers1: AltLayer1Set,
+    pub chain_net: ChainNet,
 }
 
 impl ContractInfo {
@@ -295,8 +294,7 @@ impl ContractInfo {
                 .timestamp_opt(genesis.timestamp, 0)
                 .single()
                 .unwrap_or_else(Utc::now),
-            testnet: genesis.testnet,
-            alt_layers1: genesis.alt_layers1.clone(),
+            chain_net: genesis.chain_net,
         }
     }
 }
@@ -304,14 +302,7 @@ impl ContractInfo {
 impl Display for ContractInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.id)?;
-        write!(
-            f,
-            "\tbitcoin{: <12}",
-            self.alt_layers1.iter().fold(s!(""), |mut acc, layer| {
-                write!(acc, ", {layer}").ok();
-                acc
-            })
-        )?;
+        write!(f, "\t{}", self.chain_net)?;
         write!(f, "\t{}", self.issued_at.format("%Y-%m-%d"))?;
         writeln!(f, "\t{: <80}", self.schema_id.to_string())?;
         writeln!(f, "  Developer: {}", self.issuer)

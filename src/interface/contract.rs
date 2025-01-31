@@ -22,10 +22,11 @@
 use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use bp::Outpoint;
 use invoice::{Allocation, Amount};
 use rgb::{
-    AssignmentType, AttachState, ContractId, DataState, OpId, RevealedAttach, RevealedData,
-    RevealedValue, Schema, VoidState, XOutpoint, XOutputSeal, XWitnessId,
+    AssignmentType, AttachState, ContractId, DataState, OpId, OutputSeal, RevealedAttach,
+    RevealedData, RevealedValue, Schema, Txid, VoidState,
 };
 use strict_encoding::{FieldName, StrictDecode, StrictDumb, StrictEncode};
 use strict_types::{StrictVal, TypeSystem};
@@ -119,7 +120,7 @@ pub struct ContractOp {
     pub ty: AssignmentType,
     pub opids: BTreeSet<OpId>,
     pub state: AllocatedState,
-    pub to: BTreeSet<XOutputSeal>,
+    pub to: BTreeSet<OutputSeal>,
     pub witness: Option<WitnessInfo>,
 }
 
@@ -368,7 +369,7 @@ impl<S: ContractStateRead> ContractIface<S> {
 
     pub fn outpoint_allocations(
         &self,
-        outpoint: XOutpoint,
+        outpoint: Outpoint,
     ) -> impl Iterator<Item = OwnedAllocation> + '_ {
         self.allocations(outpoint)
     }
@@ -517,7 +518,7 @@ impl<S: ContractStateRead> ContractIface<S> {
         self.operations(|state| state.attach_all(), filter_outpoints, filter_witnesses)
     }
 
-    pub fn witness_info(&self, witness_id: XWitnessId) -> Option<WitnessInfo> {
+    pub fn witness_info(&self, witness_id: Txid) -> Option<WitnessInfo> {
         let ord = self.state.witness_ord(witness_id)?;
         Some(WitnessInfo {
             id: witness_id,

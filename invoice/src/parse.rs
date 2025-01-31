@@ -30,12 +30,10 @@ use fluent_uri::Uri;
 use indexmap::IndexMap;
 use invoice::{AddressPayload, UnknownNetwork};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rgb::{ContractId, SecretSeal};
+use rgb::{ChainNet, ContractId, SecretSeal};
 use strict_encoding::{InvalidRString, TypeName};
 
-use crate::invoice::{
-    Beneficiary, ChainNet, InvoiceState, Pay2Vout, RgbInvoice, RgbTransport, XChainNet,
-};
+use crate::invoice::{Beneficiary, InvoiceState, Pay2Vout, RgbInvoice, RgbTransport, XChainNet};
 
 const OMITTED: &str = "~";
 const EXPIRY: &str = "expiry";
@@ -211,7 +209,7 @@ impl FromStr for RgbTransport {
 
 impl Display for XChainNet<Beneficiary> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:", self.chain_network())?;
+        write!(f, "{}:", self.chain_network().prefix())?;
         match self.into_inner() {
             Beneficiary::BlindedSeal(seal) => Display::fmt(&seal, f),
             Beneficiary::WitnessVout(payload) => payload.fmt_baid64(f),
@@ -219,35 +217,18 @@ impl Display for XChainNet<Beneficiary> {
     }
 }
 
-impl FromStr for ChainNet {
-    type Err = InvoiceParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase() {
-            x if ChainNet::BitcoinMainnet.to_string() == x => Ok(ChainNet::BitcoinMainnet),
-            x if ChainNet::BitcoinTestnet.to_string() == x => Ok(ChainNet::BitcoinTestnet),
-            x if ChainNet::BitcoinSignet.to_string() == x => Ok(ChainNet::BitcoinSignet),
-            x if ChainNet::BitcoinRegtest.to_string() == x => Ok(ChainNet::BitcoinRegtest),
-            x if ChainNet::LiquidMainnet.to_string() == x => Ok(ChainNet::BitcoinMainnet),
-            x if ChainNet::LiquidTestnet.to_string() == x => Ok(ChainNet::LiquidTestnet),
-            _ => Err(InvoiceParseError::Beneficiary(s.to_owned())),
-        }
-    }
-}
-
-impl DisplayBaid64<34> for Pay2Vout {
+impl DisplayBaid64<33> for Pay2Vout {
     const HRI: &'static str = "wvout";
     const CHUNKING: bool = true;
     const PREFIX: bool = true;
     const EMBED_CHECKSUM: bool = true;
     const MNEMONIC: bool = false;
 
-    fn to_baid64_payload(&self) -> [u8; 34] {
-        let mut payload = [0u8; 34];
+    fn to_baid64_payload(&self) -> [u8; 33] {
+        let mut payload = [0u8; 33];
         // tmp stack array to store the tr payload to resolve lifetime issue
         let schnorr_pk: [u8; 32];
-        payload[0] = self.method as u8;
-        let (addr_type, spk) = match &self.address {
+        let (addr_type, spk) = match &**self {
             AddressPayload::Pkh(pkh) => (Self::P2PKH, pkh.as_ref()),
             AddressPayload::Sh(sh) => (Self::P2SH, sh.as_ref()),
             AddressPayload::Wpkh(wpkh) => (Self::P2WPKH, wpkh.as_ref()),
@@ -257,8 +238,8 @@ impl DisplayBaid64<34> for Pay2Vout {
                 (Self::P2TR, &schnorr_pk[..])
             }
         };
-        payload[1] = addr_type;
-        Cursor::new(&mut payload[2..])
+        payload[0] = addr_type;
+        Cursor::new(&mut payload[1..])
             .write_all(spk)
             .expect("address payload always less than 32 bytes");
         payload
@@ -268,7 +249,7 @@ impl DisplayBaid64<34> for Pay2Vout {
 impl Display for Pay2Vout {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { self.fmt_baid64(f) }
 }
-impl FromBaid64Str<34> for Pay2Vout {}
+impl FromBaid64Str<33> for Pay2Vout {}
 impl FromStr for Pay2Vout {
     type Err = Baid64ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> { Self::from_baid64_str(s) }
@@ -281,7 +262,8 @@ impl FromStr for XChainNet<Beneficiary> {
         let Some((cn, beneficiary)) = s.split_once(':') else {
             return Err(InvoiceParseError::Beneficiary(s.to_owned()));
         };
-        let cn = ChainNet::from_str(cn)?;
+        let cn =
+            ChainNet::from_str(cn).map_err(|_| InvoiceParseError::Beneficiary(s.to_owned()))?;
         if let Ok(seal) = SecretSeal::from_str(beneficiary) {
             return Ok(XChainNet::with(cn, Beneficiary::BlindedSeal(seal)));
         }
@@ -743,41 +725,26 @@ mod test {
 
     #[test]
     fn pay2vout_parse() {
-        let p = Pay2Vout {
-            method: bp::dbc::Method::OpretFirst,
-            address: AddressPayload::Pkh([0xff; 20].into()),
-        };
+        let p = Pay2Vout::new(AddressPayload::Pkh([0xff; 20].into()));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout {
-            method: bp::dbc::Method::OpretFirst,
-            address: AddressPayload::Sh([0xff; 20].into()),
-        };
+        let p = Pay2Vout::new(AddressPayload::Sh([0xff; 20].into()));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout {
-            method: bp::dbc::Method::OpretFirst,
-            address: AddressPayload::Wpkh([0xff; 20].into()),
-        };
+        let p = Pay2Vout::new(AddressPayload::Wpkh([0xff; 20].into()));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout {
-            method: bp::dbc::Method::OpretFirst,
-            address: AddressPayload::Wsh([0xff; 32].into()),
-        };
+        let p = Pay2Vout::new(AddressPayload::Wsh([0xff; 32].into()));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
 
-        let p = Pay2Vout {
-            method: bp::dbc::Method::OpretFirst,
-            address: AddressPayload::Tr(
-                bp::OutputPk::from_byte_array([
-                    0x85, 0xa6, 0x42, 0x59, 0x8b, 0xfe, 0x2e, 0x42, 0xa3, 0x78, 0xcb, 0xb5, 0x3b,
-                    0xf1, 0x4a, 0xbe, 0x77, 0xf8, 0x1a, 0xef, 0xed, 0xf7, 0x3b, 0x66, 0x7b, 0x42,
-                    0x85, 0xaf, 0x7c, 0xf1, 0xc8, 0xa3,
-                ])
-                .unwrap(),
-            ),
-        };
+        let p = Pay2Vout::new(AddressPayload::Tr(
+            bp::OutputPk::from_byte_array([
+                0x85, 0xa6, 0x42, 0x59, 0x8b, 0xfe, 0x2e, 0x42, 0xa3, 0x78, 0xcb, 0xb5, 0x3b, 0xf1,
+                0x4a, 0xbe, 0x77, 0xf8, 0x1a, 0xef, 0xed, 0xf7, 0x3b, 0x66, 0x7b, 0x42, 0x85, 0xaf,
+                0x7c, 0xf1, 0xc8, 0xa3,
+            ])
+            .unwrap(),
+        ));
         assert_eq!(Pay2Vout::from_str(&p.to_string()).unwrap(), p);
     }
 }
