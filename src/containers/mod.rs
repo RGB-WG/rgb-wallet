@@ -39,8 +39,8 @@ mod kit;
 mod suppl;
 
 pub use anchors::{
-    AnchorSet, AnchoredBundleMismatch, AnchoredBundles, ClientBundle, PubWitness, SealWitness,
-    ToWitnessId, UnrelatedTransition, WitnessBundle, XPubWitness,
+    AnchorSet, AnchoredBundle, AnchoredBundleMismatch, ClientBundle, PubWitness, SealWitness,
+    ToWitnessId, UnrelatedTransition, WitnessBundle,
 };
 pub use consignment::{
     Consignment, ConsignmentExt, ConsignmentId, ConsignmentParseError, Contract, Transfer,
@@ -50,10 +50,7 @@ pub use disclosure::Disclosure;
 pub use file::{FileContent, LoadError, UniversalFile};
 pub use indexed::IndexedConsignment;
 pub use kit::{Kit, KitId, ValidKit};
-pub use partials::{
-    Batch, BundleDichotomy, CloseMethodSet, Dichotomy, Fascia, TransitionDichotomy, TransitionInfo,
-    TransitionInfoError,
-};
+pub use partials::{Batch, Fascia, TransitionInfo, TransitionInfoError};
 pub use seal::{BuilderSeal, VoutSeal};
 pub use suppl::{
     AnnotationName, Annotations, ContentRef, SupplId, SupplItem, SupplMap, SupplSub, Supplement,

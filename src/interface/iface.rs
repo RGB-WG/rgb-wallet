@@ -30,7 +30,7 @@ use amplify::{ByteArray, Bytes32};
 use baid64::{Baid64ParseError, DisplayBaid64, FromBaid64Str};
 use chrono::{DateTime, TimeZone, Utc};
 use commit_verify::{CommitId, CommitmentId, DigestExt, Sha256};
-use rgb::{ContractId, Identity, Occurrences, SchemaId, XWitnessId};
+use rgb::{ContractId, Identity, Occurrences, SchemaId, Txid};
 use strict_encoding::{
     FieldName, StrictDecode, StrictDeserialize, StrictDumb, StrictEncode, StrictSerialize,
     StrictType, TypeName, VariantName,
@@ -367,7 +367,7 @@ pub trait IfaceWrapper<S: ContractStateRead> {
     fn schema_id(&self) -> SchemaId;
 
     /// Returns information about a witness, if it is known to the contract state.
-    fn witness_info(&self, witness_id: XWitnessId) -> Option<WitnessInfo>;
+    fn witness_info(&self, witness_id: Txid) -> Option<WitnessInfo>;
 }
 
 /// Interface definition.

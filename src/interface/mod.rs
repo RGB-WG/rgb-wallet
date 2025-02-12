@@ -32,7 +32,7 @@ pub(crate) mod resolver;
 mod contractum;
 mod inheritance;
 
-pub use builder::{BuilderError, ContractBuilder, TransitionBuilder, TxOutpoint};
+pub use builder::{BuilderError, ContractBuilder, TransitionBuilder};
 pub use contract::{
     AllocatedState, AttachAllocation, ContractError, ContractIface, ContractOp, DataAllocation,
     FungibleAllocation, OpDirection, OwnedAllocation, RightsAllocation,

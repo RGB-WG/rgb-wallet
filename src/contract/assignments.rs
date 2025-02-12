@@ -20,18 +20,17 @@
 // limitations under the License.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
 
 use amplify::confinement::SmallVec;
-use commit_verify::Conceal;
 use invoice::Amount;
 use rgb::vm::WitnessOrd;
 use rgb::{
     Assign, AssignAttach, AssignData, AssignFungible, AssignRights, AssignmentType, AttachState,
-    DataState, ExposedSeal, ExposedState, OpId, Opout, RevealedAttach, RevealedData, RevealedValue,
-    TypedAssigns, VoidState, XChain, XOutputSeal, XWitnessId,
+    BundleId, DataState, ExposedSeal, ExposedState, OpId, Opout, OutputSeal, RevealedAttach,
+    RevealedData, RevealedValue, Txid, TypedAssigns, VoidState,
 };
 use strict_encoding::{StrictDecode, StrictDumb, StrictEncode};
 
@@ -78,7 +77,7 @@ impl KnownState for RevealedAttach {
     serde(crate = "serde_crate", rename_all = "camelCase")
 )]
 pub struct WitnessInfo {
-    pub id: XWitnessId,
+    pub id: Txid,
     pub ord: WitnessOrd,
 }
 
@@ -93,9 +92,10 @@ pub struct WitnessInfo {
 )]
 pub struct OutputAssignment<State: KnownState> {
     pub opout: Opout,
-    pub seal: XOutputSeal,
+    pub seal: OutputSeal,
     pub state: State,
-    pub witness: Option<XWitnessId>,
+    pub witness: Option<Txid>,
+    pub bundle_id: Option<BundleId>,
 }
 
 impl<State: KnownState> PartialEq for OutputAssignment<State> {
@@ -135,20 +135,19 @@ impl<State: KnownState> OutputAssignment<State> {
     /// If the processing is done on invalid stash data, the seal is
     /// witness-based and the anchor chain doesn't match the seal chain.
     pub fn with_witness<Seal: ExposedSeal>(
-        seal: XChain<Seal>,
-        witness_id: XWitnessId,
+        seal: Seal,
+        witness_id: Txid,
         state: State,
+        bundle_id: Option<BundleId>,
         opid: OpId,
         ty: AssignmentType,
         no: u16,
     ) -> Self {
         OutputAssignment {
             opout: Opout::new(opid, ty, no),
-            seal: seal.try_to_output_seal(witness_id).expect(
-                "processing contract from unverified/invalid stash: witness seal chain doesn't \
-                 match anchor's chain",
-            ),
+            seal: seal.to_output_seal_or_default(witness_id),
             state,
+            bundle_id,
             witness: witness_id.into(),
         }
     }
@@ -158,8 +157,9 @@ impl<State: KnownState> OutputAssignment<State> {
     /// If the processing is done on invalid stash data, the seal is
     /// witness-based and the anchor chain doesn't match the seal chain.
     pub fn with_no_witness<Seal: ExposedSeal>(
-        seal: XChain<Seal>,
+        seal: Seal,
         state: State,
+        bundle_id: Option<BundleId>,
         opid: OpId,
         ty: AssignmentType,
         no: u16,
@@ -171,6 +171,7 @@ impl<State: KnownState> OutputAssignment<State> {
                  information since it comes from genesis or extension",
             ),
             state,
+            bundle_id,
             witness: None,
         }
     }
@@ -181,11 +182,12 @@ impl<State: KnownState> OutputAssignment<State> {
             opout: self.opout,
             seal: self.seal,
             state: self.state.into(),
+            bundle_id: self.bundle_id,
             witness: self.witness,
         }
     }
 
-    pub fn check_witness(&self, filter: &HashMap<XWitnessId, WitnessOrd>) -> bool {
+    pub fn check_witness(&self, filter: &HashMap<Txid, WitnessOrd>) -> bool {
         match self.witness {
             None => true,
             Some(witness_id) => {
@@ -193,19 +195,26 @@ impl<State: KnownState> OutputAssignment<State> {
             }
         }
     }
+
+    pub fn check_bundle(&self, invalid_bundles: &BTreeSet<BundleId>) -> bool {
+        match self.bundle_id {
+            Some(bundle_id) => !invalid_bundles.contains(&bundle_id),
+            None => true,
+        }
+    }
 }
 
 pub trait TypedAssignsExt<Seal: ExposedSeal> {
-    fn reveal_seal(&mut self, seal: XChain<Seal>);
+    fn reveal_seal(&mut self, seal: Seal);
 
-    fn filter_revealed_seals(&self) -> Vec<XChain<Seal>>;
+    fn filter_revealed_seals(&self) -> Vec<Seal>;
 }
 
 impl<Seal: ExposedSeal> TypedAssignsExt<Seal> for TypedAssigns<Seal> {
-    fn reveal_seal(&mut self, seal: XChain<Seal>) {
+    fn reveal_seal(&mut self, seal: Seal) {
         fn reveal<State: ExposedState, Seal: ExposedSeal>(
             vec: &mut SmallVec<Assign<State, Seal>>,
-            revealed: XChain<Seal>,
+            revealed: Seal,
         ) {
             for assign in vec.iter_mut() {
                 match assign {
@@ -238,7 +247,7 @@ impl<Seal: ExposedSeal> TypedAssignsExt<Seal> for TypedAssigns<Seal> {
         }
     }
 
-    fn filter_revealed_seals(&self) -> Vec<XChain<Seal>> {
+    fn filter_revealed_seals(&self) -> Vec<Seal> {
         match self {
             TypedAssigns::Declarative(s) => {
                 s.iter().filter_map(AssignRights::revealed_seal).collect()

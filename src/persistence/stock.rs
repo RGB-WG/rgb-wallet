@@ -24,20 +24,20 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::Debug;
+use std::num::NonZeroU32;
 
-use amplify::confinement::{Confined, U24};
+use amplify::confinement::{Confined, LargeOrdSet, U24};
 use amplify::Wrapper;
-use bp::dbc::Method;
 use bp::seals::txout::CloseMethod;
-use bp::Vout;
+use bp::{Outpoint, Txid, Vout};
 use chrono::Utc;
 use invoice::{Amount, Beneficiary, InvoiceState, NonFungible, RgbInvoice};
 use nonasync::persistence::{CloneNoPersistence, PersistenceError, PersistenceProvider};
 use rgb::validation::{DbcProof, ResolveWitness, WitnessResolverError};
+use rgb::vm::WitnessOrd;
 use rgb::{
-    validation, AssignmentType, BlindingFactor, BundleId, ContractId, DataState, GraphSeal,
-    Identity, OpId, Operation, Opout, SchemaId, SecretSeal, Transition, TxoSeal, XChain, XOutpoint,
-    XOutputSeal, XWitnessId,
+    validation, AssignmentType, BundleId, ChainNet, ContractId, DataState, GraphSeal, Identity,
+    OpId, Operation, Opout, OutputSeal, SchemaId, SecretSeal, Transition,
 };
 use strict_encoding::FieldName;
 
@@ -51,9 +51,8 @@ use super::{
 use crate::containers::{
     AnchorSet, AnchoredBundleMismatch, Batch, BuilderSeal, ClientBundle, Consignment, ContainerVer,
     ContentId, ContentRef, Contract, Fascia, Kit, SealWitness, SupplItem, SupplSub, Transfer,
-    TransitionDichotomy, TransitionInfo, TransitionInfoError, UnrelatedTransition,
-    ValidConsignment, ValidContract, ValidKit, ValidTransfer, VelocityHint, WitnessBundle,
-    SUPPL_ANNOT_VELOCITY,
+    TransitionInfo, TransitionInfoError, UnrelatedTransition, ValidConsignment, ValidContract,
+    ValidKit, ValidTransfer, VelocityHint, WitnessBundle, SUPPL_ANNOT_VELOCITY,
 };
 use crate::info::{ContractInfo, IfaceInfo, SchemaInfo};
 use crate::interface::{
@@ -62,7 +61,7 @@ use crate::interface::{
 };
 use crate::MergeRevealError;
 
-pub type ContractAssignments = HashMap<XOutputSeal, HashMap<Opout, PersistedState>>;
+pub type ContractAssignments = HashMap<OutputSeal, HashMap<Opout, PersistedState>>;
 
 #[derive(Debug, Display, Error, From)]
 #[display(inner)]
@@ -113,7 +112,7 @@ pub enum StockError<
     AbsentValidWitness,
 
     /// witness {0} can't be resolved: {1}
-    WitnessUnresolved(XWitnessId, WitnessResolverError),
+    WitnessUnresolved(Txid, WitnessResolverError),
 }
 
 impl<S: StashProvider, H: StateProvider, P: IndexProvider, E: Error> From<StashError<S>>
@@ -224,6 +223,9 @@ pub enum ComposeError {
 
     /// expired invoice.
     InvoiceExpired,
+
+    /// Invoice requesting chain-network pair {0} but contract commits to a different one ({1})
+    InvoiceBeneficiaryWrongChainNet(ChainNet, ChainNet),
 
     /// the invoice contains no contract information.
     NoContract,
@@ -526,7 +528,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     /// output seals.
     pub fn contracts_assigning(
         &self,
-        outputs: impl IntoIterator<Item = impl Into<XOutpoint>>,
+        outputs: impl IntoIterator<Item = impl Into<Outpoint>>,
     ) -> Result<impl Iterator<Item = ContractId> + '_, StockError<S, H, P>> {
         let outputs = outputs
             .into_iter()
@@ -610,32 +612,27 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     pub fn contract_assignments_for(
         &self,
         contract_id: ContractId,
-        outpoints: impl IntoIterator<Item = impl Into<XOutpoint>>,
+        outpoints: impl IntoIterator<Item = impl Into<Outpoint>>,
     ) -> Result<ContractAssignments, StockError<S, H, P>> {
-        let outputs: BTreeSet<XOutpoint> = outpoints.into_iter().map(|o| o.into()).collect();
+        let outputs: BTreeSet<Outpoint> = outpoints.into_iter().map(|o| o.into()).collect();
 
         let state = self.contract_state(contract_id)?;
 
         let mut res =
-            HashMap::<XOutputSeal, HashMap<Opout, PersistedState>>::with_capacity(outputs.len());
+            HashMap::<OutputSeal, HashMap<Opout, PersistedState>>::with_capacity(outputs.len());
 
         for item in state.fungible_all() {
             let outpoint = item.seal.into();
-            if outputs.contains::<XOutpoint>(&outpoint) {
-                res.entry(item.seal).or_default().insert(
-                    item.opout,
-                    PersistedState::Amount(
-                        item.state.value.into(),
-                        item.state.blinding,
-                        item.state.tag,
-                    ),
-                );
+            if outputs.contains::<Outpoint>(&outpoint) {
+                res.entry(item.seal)
+                    .or_default()
+                    .insert(item.opout, PersistedState::Amount(item.state.value.into()));
             }
         }
 
         for item in state.data_all() {
             let outpoint = item.seal.into();
-            if outputs.contains::<XOutpoint>(&outpoint) {
+            if outputs.contains::<Outpoint>(&outpoint) {
                 res.entry(item.seal).or_default().insert(
                     item.opout,
                     PersistedState::Data(item.state.value.clone(), item.state.salt),
@@ -645,7 +642,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
         for item in state.rights_all() {
             let outpoint = item.seal.into();
-            if outputs.contains::<XOutpoint>(&outpoint) {
+            if outputs.contains::<Outpoint>(&outpoint) {
                 res.entry(item.seal)
                     .or_default()
                     .insert(item.opout, PersistedState::Void);
@@ -654,7 +651,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
         for item in state.attach_all() {
             let outpoint = item.seal.into();
-            if outputs.contains::<XOutpoint>(&outpoint) {
+            if outputs.contains::<Outpoint>(&outpoint) {
                 res.entry(item.seal).or_default().insert(
                     item.opout,
                     PersistedState::Attachment(item.state.clone().into(), item.state.salt),
@@ -670,10 +667,11 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         issuer: impl Into<Identity>,
         schema_id: SchemaId,
         iface: impl Into<IfaceRef>,
+        chain_net: ChainNet,
     ) -> Result<ContractBuilder, StockError<S, H, P>> {
         Ok(self
             .stash
-            .contract_builder(issuer.into(), schema_id, iface)?)
+            .contract_builder(issuer.into(), schema_id, iface, chain_net)?)
     }
 
     pub fn transition_builder(
@@ -720,25 +718,27 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         &self,
         contract_id: ContractId,
     ) -> Result<Contract, StockError<S, H, P, ConsignError>> {
-        let consignment = self.consign::<false>(contract_id, [], None)?;
+        let consignment = self.consign::<false>(contract_id, [], None, None)?;
         Ok(consignment)
     }
 
     pub fn transfer(
         &self,
         contract_id: ContractId,
-        outputs: impl AsRef<[XOutputSeal]>,
-        secret_seal: Option<XChain<SecretSeal>>,
+        outputs: impl AsRef<[OutputSeal]>,
+        secret_seal: Option<SecretSeal>,
+        witness_id: Option<Txid>,
     ) -> Result<Transfer, StockError<S, H, P, ConsignError>> {
-        let consignment = self.consign(contract_id, outputs, secret_seal)?;
+        let consignment = self.consign(contract_id, outputs, secret_seal, witness_id)?;
         Ok(consignment)
     }
 
     fn consign<const TRANSFER: bool>(
         &self,
         contract_id: ContractId,
-        outputs: impl AsRef<[XOutputSeal]>,
-        secret_seal: Option<XChain<SecretSeal>>,
+        outputs: impl AsRef<[OutputSeal]>,
+        secret_seal: Option<SecretSeal>,
+        witness_id: Option<Txid>,
     ) -> Result<Consignment<TRANSFER>, StockError<S, H, P, ConsignError>> {
         let outputs = outputs.as_ref();
 
@@ -770,16 +770,25 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         // 1.3. Collect all state transitions assigning state to the provided outpoints
         let mut anchored_bundles = BTreeMap::<BundleId, ClientBundle>::new();
         let mut transitions = BTreeMap::<OpId, Transition>::new();
-        let mut terminals = BTreeMap::<BundleId, XChain<SecretSeal>>::new();
+        let mut terminals = BTreeMap::<BundleId, SecretSeal>::new();
         for opout in opouts {
             if opout.op == contract_id {
                 continue; // we skip genesis since it will be present anywhere
             }
 
             let transition = self.transition(opout.op)?;
-            transitions.insert(opout.op, transition.clone());
 
             let bundle_id = self.index.bundle_id_for_op(transition.id())?;
+
+            // skip bundles not associated to the terminals witness
+            if let Some(witness_id) = witness_id {
+                let (mut witness_ids, _) = self.index.bundle_info(bundle_id)?;
+                if !witness_ids.any(|w| w == witness_id) {
+                    continue;
+                }
+            }
+
+            transitions.insert(opout.op, transition.clone());
             // 2. Collect secret seals from terminal transitions to add to the consignment terminals
             for typed_assignments in transition.assignments.values() {
                 for index in 0..typed_assignments.len_u16() {
@@ -856,15 +865,12 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         }
         let ifaces = Confined::from_checked(ifaces);
 
-        let mut bundles = BTreeMap::<XWitnessId, WitnessBundle>::new();
+        let mut bundles = BTreeMap::<Txid, WitnessBundle>::new();
         for anchored_bundle in anchored_bundles.into_values() {
             let witness_ids = self.index.bundle_info(anchored_bundle.bundle_id())?.0;
             let witness_id = self.state.select_valid_witness(witness_ids)?;
             let pub_witness = self.stash.witness(witness_id)?.public.clone();
-            let wb = match bundles.remove(&witness_id) {
-                Some(bundle) => bundle.into_double(anchored_bundle)?,
-                None => WitnessBundle::with(pub_witness, anchored_bundle),
-            };
+            let wb = WitnessBundle::with(pub_witness, anchored_bundle);
             let res = bundles.insert(witness_id, wb);
             debug_assert!(res.is_none());
         }
@@ -908,19 +914,16 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     pub fn compose(
         &self,
         invoice: &RgbInvoice,
-        prev_outputs: impl IntoIterator<Item = impl Into<XOutputSeal>>,
-        method: CloseMethod,
+        prev_outputs: impl IntoIterator<Item = impl Into<OutputSeal>>,
         beneficiary_vout: Option<impl Into<Vout>>,
         allocator: impl Fn(ContractId, AssignmentType, VelocityHint) -> Option<Vout>,
     ) -> Result<Batch, StockError<S, H, P, ComposeError>> {
         self.compose_deterministic(
             invoice,
             prev_outputs,
-            method,
             beneficiary_vout,
             u64::MAX,
             allocator,
-            |_, _| BlindingFactor::random(),
             |_, _| rand::random(),
         )
     }
@@ -932,19 +935,16 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
     pub fn compose_deterministic(
         &self,
         invoice: &RgbInvoice,
-        prev_outputs: impl IntoIterator<Item = impl Into<XOutputSeal>>,
-        method: CloseMethod,
+        prev_outputs: impl IntoIterator<Item = impl Into<OutputSeal>>,
         beneficiary_vout: Option<impl Into<Vout>>,
         priority: u64,
         allocator: impl Fn(ContractId, AssignmentType, VelocityHint) -> Option<Vout>,
-        pedersen_blinder: impl Fn(ContractId, AssignmentType) -> BlindingFactor,
         seal_blinder: impl Fn(ContractId, AssignmentType) -> u64,
     ) -> Result<Batch, StockError<S, H, P, ComposeError>> {
-        let layer1 = invoice.layer1();
         let prev_outputs = prev_outputs
             .into_iter()
             .map(|o| o.into())
-            .collect::<HashSet<XOutputSeal>>();
+            .collect::<HashSet<OutputSeal>>();
 
         #[allow(clippy::type_complexity)]
         let output_for_assignment =
@@ -968,9 +968,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                     .unwrap_or_default();
                 let vout = allocator(id, assignment_type, velocity)
                     .ok_or(ComposeError::NoBlankOrChange(velocity, assignment_type))?;
-                let seal =
-                    GraphSeal::with_blinded_vout(method, vout, seal_blinder(id, assignment_type));
-                Ok(BuilderSeal::Revealed(XChain::with(layer1, seal)))
+                let seal = GraphSeal::with_blinded_vout(vout, seal_blinder(id, assignment_type));
+                Ok(BuilderSeal::Revealed(seal))
             };
 
         // 1. Prepare the data
@@ -993,25 +992,26 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
             .assignments_type(&assignment_name)
             .ok_or(BuilderError::InvalidStateField(assignment_name.clone()))?;
 
-        // If there are inputs which are using different seal closing method from our
-        // wallet (and thus main state transition) we need to put them aside and
-        // allocate a different state transition spending them as a change.
-        let mut alt_builder =
-            self.transition_builder(contract_id, iface.clone(), invoice.operation.clone())?;
-        let mut alt_inputs = Vec::<XOutputSeal>::new();
+        let contract_genesis = self.stash.genesis(contract_id)?;
+        let contract_chain_net = contract_genesis.chain_net;
+        let invoice_chain_net = invoice.chain_network();
+        if contract_chain_net != invoice_chain_net {
+            return Err(ComposeError::InvoiceBeneficiaryWrongChainNet(
+                invoice_chain_net,
+                contract_chain_net,
+            )
+            .into());
+        }
 
-        let layer1 = invoice.beneficiary.chain_network().layer1();
         let beneficiary = match (invoice.beneficiary.into_inner(), beneficiary_vout) {
-            (Beneficiary::BlindedSeal(seal), None) => {
-                BuilderSeal::Concealed(XChain::with(layer1, seal))
-            }
+            (Beneficiary::BlindedSeal(seal), None) => BuilderSeal::Concealed(seal),
             (Beneficiary::BlindedSeal(_), Some(_)) => {
                 return Err(ComposeError::BeneficiaryVout.into());
             }
-            (Beneficiary::WitnessVout(payload), Some(vout)) => {
+            (Beneficiary::WitnessVout(_), Some(vout)) => {
                 let blinding = seal_blinder(contract_id, assignment_id);
-                let seal = GraphSeal::with_blinded_vout(payload.method, vout, blinding);
-                BuilderSeal::Revealed(XChain::with(layer1, seal))
+                let seal = GraphSeal::with_blinded_vout(vout, blinding);
+                BuilderSeal::Revealed(seal)
             }
             (Beneficiary::WitnessVout(_), None) => {
                 return Err(ComposeError::NoBeneficiaryOutput.into());
@@ -1019,49 +1019,22 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         };
 
         // 2. Prepare transition
-        let mut main_inputs = Vec::<XOutputSeal>::new();
+        let mut main_inputs = Vec::<OutputSeal>::new();
         let mut sum_inputs = Amount::ZERO;
-        let mut sum_alt = Amount::ZERO;
         let mut data_inputs = vec![];
-        let mut data_main = true;
-        let lookup_state =
-            if let InvoiceState::Data(NonFungible::RGB21(allocation)) = &invoice.owned_state {
-                Some(DataState::from(*allocation))
-            } else {
-                None
-            };
 
         for (output, list) in
             self.contract_assignments_for(contract_id, prev_outputs.iter().copied())?
         {
-            if output.method() == method {
-                main_inputs.push(output)
-            } else {
-                alt_inputs.push(output)
-            };
-            for (opout, mut state) in list {
-                if output.method() == method {
-                    main_builder = main_builder.add_input(opout, state.clone())?;
-                } else {
-                    alt_builder = alt_builder.add_input(opout, state.clone())?;
-                }
+            main_inputs.push(output);
+            for (opout, state) in list {
+                main_builder = main_builder.add_input(opout, state.clone())?;
                 if opout.ty != assignment_id {
                     let seal = output_for_assignment(contract_id, opout.ty)?;
-                    state.update_blinding(pedersen_blinder(contract_id, assignment_id));
-                    if output.method() == method {
-                        main_builder = main_builder.add_owned_state_raw(opout.ty, seal, state)?;
-                    } else {
-                        alt_builder = alt_builder.add_owned_state_raw(opout.ty, seal, state)?;
-                    }
-                } else if let PersistedState::Amount(value, _, _) = state {
+                    main_builder = main_builder.add_owned_state_raw(opout.ty, seal, state)?;
+                } else if let PersistedState::Amount(value) = state {
                     sum_inputs += value;
-                    if output.method() != method {
-                        sum_alt += value;
-                    }
                 } else if let PersistedState::Data(value, _) = state {
-                    if lookup_state.as_ref() == Some(&value) && output.method() != method {
-                        data_main = false;
-                    }
                     data_inputs.push(value);
                 }
             }
@@ -1074,46 +1047,18 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                     return Err(ComposeError::InsufficientState.into());
                 }
 
-                let sum_main = sum_inputs - sum_alt;
-                let (paid_main, paid_alt) =
-                    if sum_main < amt { (sum_main, amt - sum_main) } else { (amt, Amount::ZERO) };
-                let blinding_beneficiary = pedersen_blinder(contract_id, assignment_id);
-
-                if paid_main > Amount::ZERO {
-                    main_builder = main_builder.add_fungible_state_raw(
-                        assignment_id,
-                        beneficiary,
-                        paid_main,
-                        blinding_beneficiary,
-                    )?;
+                if amt > Amount::ZERO {
+                    main_builder =
+                        main_builder.add_fungible_state_raw(assignment_id, beneficiary, amt)?;
                 }
-                if paid_alt > Amount::ZERO {
-                    alt_builder = alt_builder.add_fungible_state_raw(
-                        assignment_id,
-                        beneficiary,
-                        paid_alt,
-                        blinding_beneficiary,
-                    )?;
-                }
-
-                let blinding_change = pedersen_blinder(contract_id, assignment_id);
-                let change_seal = output_for_assignment(contract_id, assignment_id)?;
 
                 // Pay change
-                if sum_main > paid_main {
+                if sum_inputs > amt {
+                    let change_seal = output_for_assignment(contract_id, assignment_id)?;
                     main_builder = main_builder.add_fungible_state_raw(
                         assignment_id,
                         change_seal,
-                        sum_main - paid_main,
-                        blinding_change,
-                    )?;
-                }
-                if sum_alt > paid_alt {
-                    alt_builder = alt_builder.add_fungible_state_raw(
-                        assignment_id,
-                        change_seal,
-                        sum_alt - paid_alt,
-                        blinding_change,
+                        sum_inputs - amt,
                     )?;
                 }
             }
@@ -1125,21 +1070,8 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                     }
 
                     let seal = seal_blinder(contract_id, assignment_id);
-                    if data_main {
-                        main_builder = main_builder.add_data_raw(
-                            assignment_id,
-                            beneficiary,
-                            allocation,
-                            seal,
-                        )?;
-                    } else {
-                        alt_builder = alt_builder.add_data_raw(
-                            assignment_id,
-                            beneficiary,
-                            allocation,
-                            seal,
-                        )?;
-                    }
+                    main_builder =
+                        main_builder.add_data_raw(assignment_id, beneficiary, allocation, seal)?;
                 }
             },
             _ => {
@@ -1152,96 +1084,50 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
 
         // 3. Prepare other transitions
         // Enumerate state
-        let mut spent_state =
-            HashMap::<ContractId, HashMap<XOutputSeal, HashMap<Opout, PersistedState>>>::new();
+        let mut blank_state =
+            HashMap::<ContractId, HashMap<OutputSeal, HashMap<Opout, PersistedState>>>::new();
         for id in self.contracts_assigning(prev_outputs.iter().copied())? {
             // Skip current contract
             if id == contract_id {
                 continue;
             }
             let state = self.contract_assignments_for(id, prev_outputs.iter().copied())?;
-            let entry = spent_state.entry(id).or_default();
+            let entry = blank_state.entry(id).or_default();
             for (seal, assigns) in state {
                 entry.entry(seal).or_default().extend(assigns);
             }
         }
 
         // Construct blank transitions
-        let mut blanks = Confined::<Vec<_>, 0, { U24 - 1 }>::with_capacity(spent_state.len());
-        for (id, list) in spent_state {
-            let mut blank_builder_tapret = self.blank_builder(id, iface.clone())?;
-            let mut blank_builder_opret = self.blank_builder(id, iface.clone())?;
-            let mut outputs_tapret = Vec::with_capacity(list.len());
-            let mut outputs_opret = Vec::with_capacity(list.len());
+        let mut blanks = Confined::<Vec<_>, 0, { U24 - 1 }>::with_capacity(blank_state.len());
+        for (id, list) in blank_state {
+            let mut blank_builder = self.blank_builder(id, iface.clone())?;
+            let mut outputs = Vec::with_capacity(list.len());
             for (output, assigns) in list {
-                match output.method() {
-                    Method::TapretFirst => outputs_tapret.push(output),
-                    Method::OpretFirst => outputs_opret.push(output),
-                }
+                outputs.push(output);
                 for (opout, state) in assigns {
                     let seal = output_for_assignment(id, opout.ty)?;
-                    match output.method() {
-                        Method::TapretFirst => {
-                            blank_builder_tapret = blank_builder_tapret
-                                .add_input(opout, state.clone())?
-                                .add_owned_state_raw(opout.ty, seal, state)?
-                        }
-                        Method::OpretFirst => {
-                            blank_builder_opret = blank_builder_opret
-                                .add_input(opout, state.clone())?
-                                .add_owned_state_raw(opout.ty, seal, state)?
-                        }
-                    }
+                    blank_builder = blank_builder
+                        .add_input(opout, state.clone())?
+                        .add_owned_state_raw(opout.ty, seal, state)?
                 }
             }
-
-            let mut dicho = vec![];
-            for (blank_builder, outputs) in
-                [(blank_builder_tapret, outputs_tapret), (blank_builder_opret, outputs_opret)]
-            {
-                if !blank_builder.has_inputs() {
-                    continue;
-                }
-                let transition = blank_builder.complete_transition()?;
-                let info = TransitionInfo::new(transition, outputs).map_err(|e| {
-                    debug_assert!(!matches!(e, TransitionInfoError::CloseMethodDivergence(_)));
-                    ComposeError::TooManyInputs
-                })?;
-                dicho.push(info);
+            if !blank_builder.has_inputs() {
+                continue;
             }
-            blanks
-                .push(TransitionDichotomy::from_iter(dicho))
-                .map_err(|_| ComposeError::TooManyBlanks)?;
+            let transition = blank_builder.complete_transition()?;
+            let info = TransitionInfo::new(transition, outputs)
+                .map_err(|_| ComposeError::TooManyInputs)?;
+            blanks.push(info).map_err(|_| ComposeError::TooManyBlanks)?;
         }
 
-        let (first_builder, first_inputs, second_builder, second_inputs) =
-            match (main_builder.has_inputs(), alt_builder.has_inputs()) {
-                (true, true) => (main_builder, main_inputs, Some(alt_builder), alt_inputs),
-                (true, false) => (main_builder, main_inputs, None, alt_inputs),
-                (false, true) => (alt_builder, alt_inputs, None, main_inputs),
-                (false, false) => return Err(ComposeError::InsufficientState.into()),
-            };
-        let first = TransitionInfo::new(first_builder.complete_transition()?, first_inputs)
-            .map_err(|e| {
-                debug_assert!(!matches!(e, TransitionInfoError::CloseMethodDivergence(_)));
-                ComposeError::TooManyInputs
-            })?;
-        let second = if let Some(second_builder) = second_builder {
-            Some(
-                TransitionInfo::new(second_builder.complete_transition()?, second_inputs).map_err(
-                    |e| {
-                        debug_assert!(!matches!(e, TransitionInfoError::CloseMethodDivergence(_)));
-                        ComposeError::TooManyInputs
-                    },
-                )?,
-            )
-        } else {
-            None
-        };
-        let mut batch = Batch {
-            main: TransitionDichotomy::with(first, second),
-            blanks,
-        };
+        if !main_builder.has_inputs() {
+            return Err(ComposeError::InsufficientState.into());
+        }
+
+        let main = TransitionInfo::new(main_builder.complete_transition()?, main_inputs)
+            .map_err(|_| ComposeError::TooManyInputs)?;
+        let mut batch = Batch { main, blanks };
         batch.set_priority(priority);
         Ok(batch)
     }
@@ -1369,19 +1255,14 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         let bundle = self.stash.bundle(bundle_id)?.clone();
         let witness_id = self.state.select_valid_witness(witness_ids)?;
         let witness = self.stash.witness(witness_id)?;
-        let (merkle_block, dbc) = match (bundle.close_method, &witness.anchors) {
-            (
+        let (merkle_block, dbc, close_method) = match &witness.anchor {
+            AnchorSet::Tapret(tapret) => (
+                &tapret.mpc_proof,
+                DbcProof::Tapret(tapret.dbc_proof.clone()),
                 CloseMethod::TapretFirst,
-                AnchorSet::Tapret(tapret) | AnchorSet::Double { tapret, .. },
-            ) => (&tapret.mpc_proof, DbcProof::Tapret(tapret.dbc_proof.clone())),
-            (
-                CloseMethod::OpretFirst,
-                AnchorSet::Opret(opret) | AnchorSet::Double { opret, .. },
-            ) => (&opret.mpc_proof, DbcProof::Opret(opret.dbc_proof)),
-            _ => {
-                return Err(
-                    StashInconsistency::BundleMissedInAnchors(bundle_id, contract_id).into()
-                );
+            ),
+            AnchorSet::Opret(opret) => {
+                (&opret.mpc_proof, DbcProof::Opret(opret.dbc_proof), CloseMethod::OpretFirst)
             }
         };
         let Ok(mpc_proof) = merkle_block.to_merkle_proof(contract_id.into()) else {
@@ -1389,7 +1270,7 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
                 witness_id,
                 bundle_id,
                 contract_id,
-                CloseMethod::OpretFirst,
+                close_method,
             )
             .into());
         };
@@ -1399,26 +1280,218 @@ impl<S: StashProvider, H: StateProvider, P: IndexProvider> Stock<S, H, P> {
         Ok(ClientBundle::new(mpc_proof, dbc, bundle))
     }
 
-    pub fn store_secret_seal(
-        &mut self,
-        seal: XChain<GraphSeal>,
-    ) -> Result<bool, StockError<S, H, P>> {
+    pub fn store_secret_seal(&mut self, seal: GraphSeal) -> Result<bool, StockError<S, H, P>> {
         Ok(self.stash.store_secret_seal(seal)?)
+    }
+
+    fn set_bundles_as_invalid(&mut self, bundle_id: &BundleId) -> Result<(), StockError<S, H, P>> {
+        // add bundle to set of invalid bundles
+        self.state.update_bundle(*bundle_id, false)?;
+        let bundle = self.stash.bundle(*bundle_id)?.clone();
+        // recursively set all bundle descendants as invalid
+        for opid in bundle.known_transitions.keys() {
+            let children_bundle_ids = match self.index.bundle_ids_children_of_op(*opid) {
+                Ok(bundle_ids) => bundle_ids,
+                Err(IndexError::Inconsistency(IndexInconsistency::BundleAbsent(_))) => {
+                    // this transition has no children yet
+                    return Ok(());
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            for child_bundle_id in children_bundle_ids {
+                self.set_bundles_as_invalid(&child_bundle_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn maybe_update_bundles_as_valid(
+        &mut self,
+        bundle_id: &BundleId,
+        invalid_bundles: &mut LargeOrdSet<BundleId>,
+        maybe_became_valid_bundle_ids: &mut BTreeSet<BundleId>,
+    ) -> Result<bool, StockError<S, H, P>> {
+        let bundle = self.stash.bundle(*bundle_id)?.clone();
+        let mut valid = true;
+        // recursively visit bundle ancestors
+        for transition in bundle.known_transitions.values() {
+            for input in &transition.inputs {
+                let input_opid = input.prev_out.op;
+                let input_bundle_id = match self.index.bundle_id_for_op(input_opid) {
+                    Ok(id) => Some(id),
+                    Err(IndexError::Inconsistency(IndexInconsistency::BundleAbsent(_))) => {
+                        // reached genesis
+                        None
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+
+                if let Some(input_bundle_id) = input_bundle_id {
+                    // process parent first if its status is also uncertain
+                    if maybe_became_valid_bundle_ids.contains(&input_bundle_id) {
+                        valid = self.maybe_update_bundles_as_valid(
+                            &input_bundle_id,
+                            invalid_bundles,
+                            maybe_became_valid_bundle_ids,
+                        )?;
+                    // a single invalid parent is enough to consider the bundle as invalid
+                    } else if invalid_bundles.contains(&input_bundle_id) {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // remove bundle since at this point we are sure about its status
+        maybe_became_valid_bundle_ids.remove(bundle_id);
+
+        if valid {
+            // remove bundle from set of invalid bundles
+            self.state.update_bundle(*bundle_id, true)?;
+            invalid_bundles.remove(bundle_id).unwrap();
+            // recursively visit bundle descendants to check if they became valid as well
+            for (opid, _transition) in bundle.known_transitions {
+                let children_bundle_ids = match self.index.bundle_ids_children_of_op(opid) {
+                    Ok(bundle_ids) => bundle_ids,
+                    Err(IndexError::Inconsistency(IndexInconsistency::BundleAbsent(_))) => {
+                        // this transition has no children yet
+                        tiny_bset![]
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                for child_bundle_id in children_bundle_ids {
+                    self.maybe_update_bundles_as_valid(
+                        &child_bundle_id,
+                        invalid_bundles,
+                        maybe_became_valid_bundle_ids,
+                    )?;
+                }
+            }
+        }
+
+        Ok(valid)
+    }
+
+    fn update_witness_ord(
+        &mut self,
+        resolver: impl ResolveWitness,
+        id: &Txid,
+        ord: &mut WitnessOrd,
+        became_invalid_witnesses: &mut BTreeMap<Txid, BTreeSet<BundleId>>,
+        became_valid_witnesses: &mut BTreeMap<Txid, BTreeSet<BundleId>>,
+    ) -> Result<(), StockError<S, H, P>> {
+        let new = resolver
+            .resolve_pub_witness_ord(*id)
+            .map_err(|e| StockError::WitnessUnresolved(*id, e))?;
+        let changed = *ord != new;
+        if changed {
+            let bundle_valid = match (*ord, new) {
+                (WitnessOrd::Archived, _) => Some(true),
+                (_, WitnessOrd::Archived) => Some(false),
+                _ => None,
+            };
+            // save witnesses that became valid or invalid
+            if let Some(valid) = bundle_valid {
+                let seal_witness = self.stash.witness(*id)?;
+                let anchor_set = seal_witness.anchor.clone();
+                let bundle_ids: BTreeSet<_> = anchor_set.known_bundle_ids().collect();
+                if valid {
+                    became_valid_witnesses.insert(*id, bundle_ids);
+                } else {
+                    became_invalid_witnesses.insert(*id, bundle_ids);
+                }
+            }
+            // save the changed witness ord
+            self.state.upsert_witness(*id, new)?;
+            *ord = new
+        }
+        Ok(())
     }
 
     pub fn update_witnesses(
         &mut self,
         resolver: impl ResolveWitness,
         after_height: u32,
+        force_witnesses: Vec<Txid>,
     ) -> Result<UpdateRes, StockError<S, H, P>> {
-        Ok(self.state.update_witnesses(resolver, after_height)?)
+        let after_height = NonZeroU32::new(after_height).unwrap_or(NonZeroU32::MIN);
+        let mut succeeded = 0;
+        let mut failed = map![];
+        self.state.begin_transaction()?;
+        let witnesses = self.as_state_provider().witnesses();
+        let mut witnesses = witnesses.release();
+        let mut became_invalid_witnesses = bmap!();
+        let mut became_valid_witnesses = bmap!();
+        // 1. update witness ord of all witnesses
+        for (id, ord) in &mut witnesses {
+            if matches!(ord, WitnessOrd::Ignored) && !force_witnesses.contains(id) {
+                continue;
+            }
+            if matches!(ord, WitnessOrd::Mined(pos) if pos.height() < after_height) {
+                continue;
+            }
+            match self.update_witness_ord(
+                &resolver,
+                id,
+                ord,
+                &mut became_invalid_witnesses,
+                &mut became_valid_witnesses,
+            ) {
+                Ok(()) => {
+                    succeeded += 1;
+                }
+                Err(err) => {
+                    failed.insert(*id, err.to_string());
+                }
+            }
+        }
+
+        // 2. set invalidity of bundles
+        for bundle_ids in became_invalid_witnesses.values() {
+            for bundle_id in bundle_ids {
+                let bundle_witness_ids: BTreeSet<Txid> =
+                    self.index.bundle_info(*bundle_id)?.0.collect();
+                // set bundle as invalid only if there are no valid witnesses associated to it
+                if bundle_witness_ids
+                    .iter()
+                    .all(|id| !witnesses.get(id).unwrap().is_valid())
+                {
+                    // set this bundle and all its descendants as invalid
+                    self.set_bundles_as_invalid(bundle_id)?;
+                }
+            }
+        }
+
+        // 3. set validity of bundles
+        let mut maybe_became_valid_bundle_ids = bset!();
+        // get all bundles that became invalid and ones that were already invalid
+        let mut invalid_bundles_pre = self.as_state_provider().invalid_bundles();
+        for bundle_ids in became_valid_witnesses.values() {
+            // store bundles that may become valid (to be sure its ancestors are checked)
+            maybe_became_valid_bundle_ids.extend(bundle_ids);
+        }
+        for bundle_ids in became_valid_witnesses.values() {
+            for bundle_id in bundle_ids {
+                // check if this bundle and its descendants are now valid
+                self.maybe_update_bundles_as_valid(
+                    bundle_id,
+                    &mut invalid_bundles_pre,
+                    &mut maybe_became_valid_bundle_ids,
+                )?;
+            }
+        }
+
+        self.state.commit_transaction()?;
+        Ok(UpdateRes { succeeded, failed })
     }
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct UpdateRes {
     pub succeeded: usize,
-    pub failed: HashMap<XWitnessId, String>,
+    pub failed: HashMap<Txid, String>,
 }
 
 #[cfg(test)]
@@ -1435,17 +1508,14 @@ mod test {
     #[test]
     fn test_consign() {
         let mut stock = Stock::in_memory();
-        let seal = XChain::with(
-            rgbcore::Layer1::Bitcoin,
-            GraphSeal::new_random_vout(bp::dbc::Method::OpretFirst, Vout::from_u32(0)),
-        );
+        let seal = GraphSeal::new_random_vout(Vout::from_u32(0));
         let secret_seal = seal.conceal();
 
         stock.store_secret_seal(seal).unwrap();
         let contract_id =
             ContractId::from_baid64_str("rgb:qFuT6DN8-9AuO95M-7R8R8Mc-AZvs7zG-obum1Va-BRnweKk")
                 .unwrap();
-        if let Ok(transfer) = stock.consign::<true>(contract_id, [], Some(secret_seal)) {
+        if let Ok(transfer) = stock.consign::<true>(contract_id, [], Some(secret_seal), None) {
             println!("{:?}", transfer.supplements)
         }
     }
