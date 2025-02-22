@@ -23,6 +23,7 @@ use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use invoice::{Allocation, Amount};
+use rgb::vm::WitnessOrd;
 use rgb::{
     AssignmentType, AttachState, ContractId, DataState, OpId, RevealedAttach, RevealedData,
     RevealedValue, Schema, VoidState, XOutpoint, XOutputSeal, XWitnessId,
@@ -303,7 +304,15 @@ impl<S: ContractStateRead> ContractIface<S> {
             .ok_or(ContractError::FieldNameUnknown(name))?;
         Ok(state
             .into_iter()
-            .filter(move |outp| outp.opout.ty == type_id)
+            .filter(move |outp| {
+                outp.opout.ty == type_id
+                    && outp
+                        .witness
+                        .and_then(|id| self.witness_info(id))
+                        // TODO: Check the mining depth
+                        .map(|w| matches!(w.ord, WitnessOrd::Mined(_)))
+                        .unwrap_or(true)
+            })
             .cloned()
             .map(OutputAssignment::<A>::transmute))
     }
