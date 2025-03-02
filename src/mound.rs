@@ -276,10 +276,12 @@ pub mod file {
     use std::path::{Path, PathBuf};
 
     use hypersonic::expect::Expect;
-    use hypersonic::FileSupply;
+    use hypersonic::{FileSupply, Stock};
     use rgb::RgbSealDef;
     use single_use_seals::PublishedWitness;
-    use strict_encoding::{DeserializeError, StreamWriter, StrictDecode, StrictEncode};
+    use strict_encoding::{
+        DeserializeError, StreamWriter, StrictDecode, StrictEncode,
+    };
 
     use super::*;
     use crate::FilePile;
@@ -407,6 +409,45 @@ pub mod file {
             let file = File::create_new(path)?;
             let writer = StrictWriter::with(StreamWriter::new::<{ usize::MAX }>(file));
             self.consign(contract_id, terminals, writer)
+        }
+
+        pub fn import_articles(&mut self, source_dir: impl AsRef<Path>) -> io::Result<()>
+        where
+            <SealDef::Src as SingleUseSeal>::CliWitness: StrictDecode,
+            <SealDef::Src as SingleUseSeal>::PubWitness: StrictDecode,
+            <<SealDef::Src as SingleUseSeal>::PubWitness as PublishedWitness<SealDef::Src>>::PubId:
+                StrictDecode,
+        {
+            let stock = Stock::<FileSupply>::load(source_dir.as_ref());
+            let articles = stock.articles().clone();
+
+            // Prevent duplicate contract IDs
+            if self.has_contract(articles.contract.contract_id()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("contract {} already exists", articles.contract.contract_id()),
+                ));
+            }
+
+            let contract_id = articles.contract.contract_id();
+            let name = articles.contract.meta.name.to_string();
+            let target_dir = self.persistence.consensus_dir();
+
+            // Persist articles to target directory
+            let _new_supply = FileSupply::new(&name, &target_dir);
+            let _new_pile = FilePile::<SealDef>::new(&name, &target_dir);
+            let _new_stock = Stock::create(articles, _new_supply);
+
+            // Load from persisted location
+            let mut contract_dir = target_dir.join(&name);
+            contract_dir.set_extension("contract");
+
+            let stockpile = Stockpile::load(&contract_dir);
+
+            // Verify contract ID matches loaded articles and insert into mound
+            assert_eq!(contract_id, stockpile.contract_id());
+            self.contracts.insert(contract_id, stockpile);
+            Ok(())
         }
     }
 }
